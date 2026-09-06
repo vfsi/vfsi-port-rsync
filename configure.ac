@@ -157,6 +157,22 @@ if test x"$GCC" = x"yes"; then
 	CFLAGS="$CFLAGS -Wall -W"
 fi
 
+VFSI_OBJ=''
+AC_ARG_ENABLE(vfsi,
+	AS_HELP_STRING([--enable-vfsi],[build optional vectorized sender scans (requires vfsi.h)]))
+if test x"$enable_vfsi" = x"yes"; then
+	AC_CHECK_HEADER([dlfcn.h], [],
+		[AC_MSG_ERROR([--enable-vfsi requires dlfcn.h])])
+	AC_CHECK_HEADER([vfsi.h], [],
+		[AC_MSG_ERROR([--enable-vfsi requires vfsi.h; add its directory to CPPFLAGS])])
+	AC_SEARCH_LIBS([dlopen], [dl], [],
+		[AC_MSG_ERROR([--enable-vfsi requires dlopen])])
+	AC_DEFINE([SUPPORT_VFSI], 1,
+		[Define to 1 to build optional vectorized filesystem scans])
+	VFSI_OBJ='rsync-vfsi.o'
+fi
+AC_SUBST(VFSI_OBJ)
+
 AC_ARG_WITH(openssl-conf,
 	AS_HELP_STRING([--with-openssl-conf=PATH],[set default OPENSSL_CONF path for rsync]))
 case "$with_openssl_conf" in

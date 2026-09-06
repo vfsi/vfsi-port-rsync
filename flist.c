@@ -21,6 +21,13 @@
  */
 
 #include "rsync.h"
+#ifdef SUPPORT_VFSI
+#include "rsync-vfsi.h"
+#else
+#define rsync_vfsi_listdir(path, names, count) 0
+#define rsync_vfsi_stat(path, st) 0
+#define rsync_vfsi_reset() ((void)0)
+#endif
 #include "ifuncs.h"
 #include "rounding.h"
 #include "inums.h"
@@ -232,6 +239,11 @@ static int scan_dir_prefix_len;
 
 static int scan_link_stat(const char *path, STRUCT_STAT *stp, int follow_dirlinks)
 {
+	/* A successful VFSI directory scan already returned lstat-style attrs for
+	 * regular files and directories. Symlinks and following modes deliberately
+	 * fall through to rsync's existing path-resolution code. */
+	if (!follow_dirlinks && rsync_vfsi_stat(path, stp))
+		return 0;
 	/* Use the held scan fd only for a single component directly inside the
 	 * scanned dir, and only when am_root >= 0 (link_stat_at folds in no
 	 * fake-super %stat xattr; link_stat does so via get_stat_xattr, a no-op
@@ -2093,14 +2105,19 @@ static void send_directory(int f, struct file_list *flist, char *fbuf, int len,
 			   int flags)
 {
 	struct dirent *di;
+	const char *const *vfsi_names = NULL;
+	size_t vfsi_count = 0, vfsi_pos = 0;
 	unsigned remainder;
 	char *p;
-	DIR *d;
+	DIR *d = NULL;
+	int using_vfsi;
 	int divert_dirs = (flags & FLAG_DIVERT_DIRS) != 0;
 	int start = flist->used;
 	int filter_level = f == -2 ? SERVER_FILTERS : ALL_FILTERS;
 
 	assert(flist != NULL);
+	using_vfsi = f >= 0
+		  && rsync_vfsi_listdir(fbuf, &vfsi_names, &vfsi_count);
 
 #if defined HAVE_FDOPENDIR && defined HAVE_DIRFD
 	/* Confine the enumeration beneath the transfer root.  secure_opendir()
@@ -2118,15 +2135,16 @@ static void send_directory(int f, struct file_list *flist, char *fbuf, int len,
 	 * yes", admin-only) -- or a non-daemon --insecure-links -- uses the legacy
 	 * opendir() too, restoring the pre-hardening enumeration (re-opening the
 	 * escape; documented). */
-	if (f >= 0 && !symlink_optout_allowed() && (secure_relpath_active()
+	if (!using_vfsi && f >= 0 && !symlink_optout_allowed() && (secure_relpath_active()
 		    || !(copy_links || copy_unsafe_links || copy_dirlinks || insecure_links)))
 		d = secure_opendir(fbuf);
-	else
+	else if (!using_vfsi)
 		d = opendir(fbuf);
 #else
-	d = opendir(fbuf);
+	if (!using_vfsi)
+		d = opendir(fbuf);
 #endif
-	if (!d) {
+	if (!using_vfsi && !d) {
 		if (errno == ENOENT) {
 			if (am_sender) /* Can abuse this for vanished error w/ENOENT: */
 				interpret_stat_error(fbuf, True);
@@ -2152,14 +2170,27 @@ static void send_directory(int f, struct file_list *flist, char *fbuf, int len,
 #ifdef HAVE_DIRFD
 	/* Let the per-entry stat (readlink_stat -> scan_link_stat) go through the
 	 * already-open directory fd instead of re-resolving fbuf for each name. */
-	scan_dirfd = dirfd(d);
-	scan_dir_prefix = fbuf;
-	scan_dir_prefix_len = len;
+	if (!using_vfsi) {
+		scan_dirfd = dirfd(d);
+		scan_dir_prefix = fbuf;
+		scan_dir_prefix_len = len;
+	}
 #endif
 
-	for (errno = 0, di = readdir(d); di; errno = 0, di = readdir(d)) {
+	for (errno = 0; ; errno = 0) {
 		unsigned name_len;
-		char *dname = d_name(di);
+		char *dname;
+
+		if (using_vfsi) {
+			if (vfsi_pos == vfsi_count)
+				break;
+			dname = (char *)vfsi_names[vfsi_pos++];
+		} else {
+			di = readdir(d);
+			if (!di)
+				break;
+			dname = d_name(di);
+		}
 		if (dname[0] == '.' && (dname[1] == '\0'
 		    || (dname[1] == '.' && dname[2] == '\0')))
 			continue;
@@ -2190,12 +2221,13 @@ static void send_directory(int f, struct file_list *flist, char *fbuf, int len,
 	scan_dir_prefix_len = 0;
 	fbuf[len] = '\0';
 
-	if (errno) {
+	if (!using_vfsi && errno) {
 		io_error |= IOERR_GENERAL;
 		rsyserr(FERROR_XFER, errno, "readdir(%s)", full_fname(fbuf));
 	}
 
-	closedir(d);
+	if (!using_vfsi)
+		closedir(d);
 
 	if (f >= 0 && recurse && !divert_dirs) {
 		int i, end = flist->used - 1;
@@ -2494,6 +2526,8 @@ void send_extra_file_list(int f, int at_least)
   finish:
 	if (io_error != save_io_error && protocol_version == 30 && !ignore_errors)
 		send_msg_int(MSG_IO_ERROR, io_error);
+	if (flist_eof)
+		rsync_vfsi_reset();
 }
 
 struct file_list *send_file_list(int f, int argc, char *argv[])
@@ -2517,6 +2551,9 @@ struct file_list *send_file_list(int f, int argc, char *argv[])
 		     | (eol_nulls || reading_remotely ? RL_EOL_NULLS : 0);
 	int implied_dot_dir = 0;
 
+	/* The VFSI metadata snapshot is scoped to exactly one source file-list
+	 * traversal. Incremental recursion retains it until NDX_FLIST_EOF. */
+	rsync_vfsi_reset();
 	rprintf(FLOG, "building file list\n");
 	if (show_filelist_progress)
 		start_filelist_progress("building file list");
@@ -2861,6 +2898,8 @@ struct file_list *send_file_list(int f, int argc, char *argv[])
 		if (DEBUG_GTE(FLIST, 3))
 			rprintf(FINFO, "[%s] flist_eof=1\n", who_am_i());
 	}
+	if (flist_eof)
+		rsync_vfsi_reset();
 
 	return flist;
 }

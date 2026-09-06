@@ -38,7 +38,7 @@ MD5_ASM_x86_64=lib/md5-asm-x86_64.o
 GENFILES=configure.sh aclocal.m4 config.h.in rsync.1 rsync.1.html \
 	 rsync-ssl.1 rsync-ssl.1.html rsyncd.conf.5 rsyncd.conf.5.html \
 	 @GEN_RRSYNC@
-HEADERS=byteorder.h config.h errcode.h proto.h rsync.h ifuncs.h itypes.h inums.h \
+HEADERS=byteorder.h config.h errcode.h proto.h rsync.h rsync-vfsi.h ifuncs.h itypes.h inums.h \
 	lib/pool_alloc.h lib/mdigest.h lib/md-defines.h
 LIBOBJ=lib/wildmatch.o lib/compat.o lib/snprintf.o lib/mdfour.o lib/md5.o \
 	lib/permstring.o lib/pool_alloc.o lib/sysacls.o lib/sysxattrs.o lib/acl.o @LIBOBJS@
@@ -47,7 +47,7 @@ zlib_OBJS=zlib/deflate.o zlib/inffast.o zlib/inflate.o zlib/inftrees.o \
 OBJS1_NO_MAIN=flist.o rsync.o generator.o receiver.o cleanup.o sender.o exclude.o \
 	util1.o util2.o checksum.o match.o syscall.o log.o backup.o delete.o
 OBJS1=$(OBJS1_NO_MAIN) main.o
-OBJS2=options.o io.o compat.o hlink.o token.o uidlist.o socket.o hashtable.o \
+OBJS2=options.o io.o compat.o hlink.o token.o uidlist.o socket.o hashtable.o @VFSI_OBJ@ \
 	usage.o fileio.o batch.o clientname.o chmod.o acls.o xattrs.o
 OBJS3=progress.o pipe.o @MD5_ASM@ @ROLL_SIMD@ @ROLL_ASM@
 DAEMON_OBJ = params.o loadparm.o clientserver.o access.o connection.o authenticate.o
