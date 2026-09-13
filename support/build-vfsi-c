@@ -1,0 +1,73 @@
+#!/bin/sh
+
+set -eu
+
+VFSI_C_VERSION=0.3.0
+VNFS_VERSION=0.0.11
+VFSI_C_SHA256=31b085e7ff9b203e026c09be465c132705eefee25239cd7965538dbe407c3c84
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+build_root=${VFSI_BUILD_DIR:-"$root/build-vfsi-c"}
+release_root="$build_root/vfsi-c-$VFSI_C_VERSION-vnfs-$VNFS_VERSION"
+archive="$release_root/vfsi-c-$VFSI_C_VERSION.crate"
+source_dir="$release_root/source"
+target_dir="$release_root/target"
+
+for tool in cargo curl patch python3 sha256sum tar; do
+	if ! command -v "$tool" >/dev/null 2>&1; then
+		echo "support/build-vfsi-c: required tool not found: $tool" >&2
+		exit 1
+	fi
+done
+
+mkdir -p "$release_root"
+if test ! -f "$archive"; then
+	curl --proto '=https' --tlsv1.2 -A "vfsi-port-rsync/$VFSI_C_VERSION" -fsSL \
+		"https://crates.io/api/v1/crates/vfsi-c/$VFSI_C_VERSION/download" \
+		-o "$archive"
+fi
+printf '%s  %s\n' "$VFSI_C_SHA256" "$archive" | sha256sum -c -
+
+if test ! -f "$source_dir/.rsync-vfsi-release"; then
+	tmp_source="$release_root/source.tmp"
+	rm -rf "$tmp_source"
+	mkdir -p "$tmp_source"
+	tar -xzf "$archive" --strip-components=1 -C "$tmp_source"
+	patch -d "$tmp_source" -p1 <"$root/support/vfsi-c-vnfs-0.0.11.patch"
+	printf '%s\n' "vfsi-c=$VFSI_C_VERSION" "vnfs=$VNFS_VERSION" \
+		>"$tmp_source/.rsync-vfsi-release"
+	rm -rf "$source_dir"
+	mv "$tmp_source" "$source_dir"
+fi
+
+cargo update --manifest-path "$source_dir/Cargo.toml" \
+	--package vnfs --precise "$VNFS_VERSION"
+
+cargo metadata --locked --format-version 1 \
+	--manifest-path "$source_dir/Cargo.toml" \
+	| python3 -c '
+import json
+import sys
+
+bad = []
+for package in json.load(sys.stdin)["packages"]:
+    source = package["source"]
+    if source is not None and not source.startswith("registry+"):
+        bad.append(f"{package['\''name'\'']} {source}")
+if bad:
+    raise SystemExit("non-registry Cargo dependencies:\n" + "\n".join(bad))
+'
+
+cargo build --release --locked \
+	--manifest-path "$source_dir/Cargo.toml" \
+	--target-dir "$target_dir"
+
+case $(uname -s) in
+	Darwin) library="$target_dir/release/libvfsi_c.dylib" ;;
+	*) library="$target_dir/release/libvfsi_c.so" ;;
+esac
+
+printf '%s\n' \
+	"VFSI C header: $source_dir/include/vfsi.h" \
+	"VFSI C library: $library" \
+	"VNFS version: $VNFS_VERSION (crates.io only)"

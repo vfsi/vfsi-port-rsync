@@ -164,7 +164,7 @@ if test x"$enable_vfsi" = x"yes"; then
 	AC_CHECK_HEADER([dlfcn.h], [],
 		[AC_MSG_ERROR([--enable-vfsi requires dlfcn.h])])
 	AC_CHECK_HEADER([vfsi.h], [],
-		[AC_MSG_ERROR([--enable-vfsi requires vfsi.h; add its directory to CPPFLAGS])])
+		[AC_MSG_ERROR([--enable-vfsi requires vfsi.h from the public vfsi-c package; see VFSI.md])])
 	AC_SEARCH_LIBS([dlopen], [dl], [],
 		[AC_MSG_ERROR([--enable-vfsi requires dlopen])])
 	AC_DEFINE([SUPPORT_VFSI], 1,

@@ -68,6 +68,7 @@ aclocal.m4
 /patches
 /patches.gen
 /build
+/build-vfsi-c
 /auto-build-save
 .deps
 /*.exe

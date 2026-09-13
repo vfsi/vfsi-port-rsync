@@ -1,0 +1,48 @@
+name: Test VFSI public package integration
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [ vfsi ]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: VNFS 0.0.11 / VFSI C ABI v3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake clang cmake \
+            libclang-dev libkrb5-dev liburcu-dev make patch
+      - name: Build VFSI from public crates
+        run: support/build-vfsi-c
+      - name: Build rsync with VFSI
+        run: |
+          CPPFLAGS="-I$PWD/build-vfsi-c/vfsi-c-0.3.0-vnfs-0.0.11/source/include" \
+            ./configure --enable-vfsi --disable-md2man --disable-xxhash \
+              --disable-zstd --disable-lz4 --disable-idn
+          make -j2
+      - name: Smoke test the public VFSI library
+        run: |
+          fixture=$(mktemp -d)
+          trap 'rm -rf "$fixture"' EXIT
+          mkdir -p "$fixture/source" "$fixture/destination"
+          printf 'vfsi public package smoke\n' >"$fixture/source/input"
+          VFSI_IMPL=dummy \
+          VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.0-vnfs-0.0.11/target/release/libvfsi_c.so" \
+          VFSI_ROOT="$fixture" \
+          VFSI_MOUNT="$fixture" \
+            ./rsync -a "$fixture/source/" "$fixture/destination/"
+          cmp "$fixture/source/input" "$fixture/destination/input"

@@ -7,12 +7,20 @@ data. VFSI is optional at build time and off by default at runtime.
 
 ## Build
 
-Point the preprocessor at the `vfsi.h` supplied by vnfs and enable the module:
+This port targets VNFS 0.0.11 through the public `vfsi-c` 0.3.0 package and
+VFSI C ABI v3. Fetch and build that release set from crates.io with:
 
 ```sh
-CPPFLAGS=-I/path/to/vnfs/vfsi-c/include ./configure --enable-vfsi
+support/build-vfsi-c
+CPPFLAGS=-I"$PWD/build-vfsi-c/vfsi-c-0.3.0-vnfs-0.0.11/source/include" \
+    ./configure --enable-vfsi
 make
 ```
+
+The helper verifies the published `vfsi-c` archive checksum, selects the
+public VNFS 0.0.11 crate, rejects Git-sourced Cargo dependencies, and builds
+the shared library below. It requires Cargo, curl, patch, Python 3, tar, and
+the native prerequisites listed by `vfsi-c` and its dependencies.
 
 A build without `--enable-vfsi` contains no VFSI code or dependency. An
 enabled build loads the shared library dynamically, so it also runs normally
@@ -22,7 +30,7 @@ when the environment variables below are absent.
 
 ```sh
 VFSI_IMPL=nfs \
-VFSI_LIBRARY=/path/to/libvfsi_c.so \
+VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.0-vnfs-0.0.11/target/release/libvfsi_c.so" \
 rsync -a /mounted/source/ /destination/
 ```
 
@@ -35,7 +43,7 @@ The local test backend uses:
 
 ```sh
 VFSI_IMPL=dummy \
-VFSI_LIBRARY=/path/to/libvfsi_c.so \
+VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.0-vnfs-0.0.11/target/release/libvfsi_c.so" \
 VFSI_ROOT=/real/backend/root \
 VFSI_MOUNT=/kernel/visible/root \
 rsync -a /kernel/visible/root/ /destination/
@@ -44,11 +52,11 @@ rsync -a /kernel/visible/root/ /destination/
 ## Semantics and fallback
 
 The optimization is intentionally limited to ordinary, non-daemon sender
-scans. Rsync uses its POSIX traversal when an option needs semantics that VFSI
-ABI v2 directory attributes cannot reproduce, including fake-super,
-symlink-following modes, `--one-file-system`, `--hard-links`, daemon modules,
-and insecure-link mode. Symlink and special-file metadata also falls back to
-the existing rsync path one entry at a time.
+scans. Rsync uses its POSIX traversal when an option needs semantics that this
+integration does not consume safely, including fake-super, symlink-following
+modes, `--one-file-system`, `--hard-links`, daemon modules, and insecure-link
+mode. Symlink and special-file metadata also falls back to the existing rsync
+path one entry at a time.
 
 Each recursive VFSI result is treated as a metadata snapshot. Its directory
 and path indexes live for one source file-list traversal, including all
