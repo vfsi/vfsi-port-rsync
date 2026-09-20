@@ -25,7 +25,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y autoconf automake clang cmake \
-            libclang-dev libkrb5-dev liburcu-dev make patch
+            libclang-dev libgssglue-dev libkrb5-dev libntirpc-dev \
+            liburcu-dev make patch pkg-config
       - name: Build VFSI from public crates
         run: support/build-vfsi-c
       - name: Build rsync with VFSI
