@@ -2,9 +2,9 @@
 
 set -eu
 
-VFSI_C_VERSION=0.3.0
-VNFS_VERSION=0.0.11
-VFSI_C_SHA256=31b085e7ff9b203e026c09be465c132705eefee25239cd7965538dbe407c3c84
+VFSI_C_VERSION=0.3.1
+VNFS_VERSION=0.0.13
+VFSI_C_SHA256=a4745bf0bbd558ef41925838bd320d9e699537279a00281c29069acabd2dcf66
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_root=${VFSI_BUILD_DIR:-"$root/build-vfsi-c"}
@@ -33,7 +33,7 @@ if test ! -f "$source_dir/.rsync-vfsi-release"; then
 	rm -rf "$tmp_source"
 	mkdir -p "$tmp_source"
 	tar -xzf "$archive" --strip-components=1 -C "$tmp_source"
-	patch -d "$tmp_source" -p1 <"$root/support/vfsi-c-vnfs-0.0.11.patch"
+	patch -d "$tmp_source" -p1 <"$root/support/vfsi-c-vnfs-0.0.13.patch"
 	printf '%s\n' "vfsi-c=$VFSI_C_VERSION" "vnfs=$VNFS_VERSION" \
 		>"$tmp_source/.rsync-vfsi-release"
 	rm -rf "$source_dir"

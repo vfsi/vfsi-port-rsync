@@ -17,7 +17,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    name: VNFS 0.0.11 / VFSI C ABI v3
+    name: VNFS 0.0.13 / VFSI C ABI v3
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
         run: support/build-vfsi-c
       - name: Build rsync with VFSI
         run: |
-          CPPFLAGS="-I$PWD/build-vfsi-c/vfsi-c-0.3.0-vnfs-0.0.11/source/include" \
+          CPPFLAGS="-I$PWD/build-vfsi-c/vfsi-c-0.3.1-vnfs-0.0.13/source/include" \
             ./configure --enable-vfsi --disable-md2man --disable-xxhash \
               --disable-zstd --disable-lz4 --disable-idn
           make -j2
@@ -41,7 +41,7 @@ jobs:
           mkdir -p "$fixture/source" "$fixture/destination"
           printf 'vfsi public package smoke\n' >"$fixture/source/input"
           VFSI_IMPL=dummy \
-          VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.0-vnfs-0.0.11/target/release/libvfsi_c.so" \
+          VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.1-vnfs-0.0.13/target/release/libvfsi_c.so" \
           VFSI_ROOT="$fixture" \
           VFSI_MOUNT="$fixture" \
             ./rsync -a "$fixture/source/" "$fixture/destination/"

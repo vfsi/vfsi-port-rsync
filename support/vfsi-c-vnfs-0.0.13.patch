@@ -1,0 +1,5 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -55 +55 @@
+-version = ">=0.0.10, <0.0.13"
++version = "=0.0.13"
