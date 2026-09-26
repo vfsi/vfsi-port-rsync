@@ -23,11 +23,11 @@ different tests merge cleanly.
 | file | contents |
 | --- | --- |
 | `common.txt` | skipped on every platform that runs the oracle — mostly `require_tcp` / `require_asan` tests, which the default stdio-pipe `make check` cannot satisfy |
-| `almalinux-8.txt` | AlmaLinux 8 container additions |
 | `linux.txt` | Linux-only additions |
 | `macos.txt` | macOS-only additions |
 | `cygwin.txt` | Cygwin-only additions |
 | `proto29.txt` | additions for a `--protocol=29` run, on any platform |
+| `proto30.txt` | additions for a `--protocol=30` run, on any platform |
 
 Compose them with commas; the result is the union, so listing a test twice is
 harmless. Plain test names may be mixed in with `@FILE` entries.

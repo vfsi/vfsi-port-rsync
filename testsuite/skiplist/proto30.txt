@@ -3,8 +3,7 @@
 # from a workflow as RSYNC_EXPECT_SKIPPED=@testsuite/skiplist/<file>[,@...].
 # See testsuite/skiplist/README.md.
 #
-# AlmaLinux 8 container additions to common.txt and linux.txt.
+# Additions for a --protocol=30 run (make check30), on top of the platform
+# files.
 
-pseudo-paths  # Bash process substitution is unavailable in the AlmaLinux 8 container
-pseudo-paths-daemon
-read-batch-pipe
+write-touched-blocks  # logical-block statistics require protocol 33+ (forced 30)
