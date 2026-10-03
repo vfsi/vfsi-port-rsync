@@ -1,25 +1,25 @@
 # Vectorized filesystem scans
 
 This branch can use the VFSI C ABI to build a sender's source file list with
-one recursive, vectorized directory operation. The ordinary rsync code still
+bounded directory-frontier listings. The ordinary rsync code still
 applies filters, constructs the file list, reads symlinks, and transfers file
 data. VFSI is optional at build time and off by default at runtime.
 
 ## Build
 
-This port targets VNFS 0.0.13 through the public `vfsi-c` 0.3.0 package and
+This port targets VNFS 0.0.16 through the public `vfsi-c` 0.3.2 package and
 VFSI C ABI v3. Fetch and build that release set from crates.io with:
 
 ```sh
 support/build-vfsi-c
-CPPFLAGS=-I"$PWD/build-vfsi-c/vfsi-c-0.3.1-vnfs-0.0.13/source/include" \
+CPPFLAGS=-I"$PWD/build-vfsi-c/vfsi-c-0.3.2-vnfs-0.0.16/source/include" \
     ./configure --enable-vfsi
 make
 ```
 
 The helper verifies the published `vfsi-c` archive checksum, selects the
-public VNFS 0.0.13 crate, rejects Git-sourced Cargo dependencies, and builds
-the shared library below. It requires Cargo, curl, patch, Python 3, tar, and
+public VNFS 0.0.16 crate, rejects Git-sourced Cargo dependencies, and builds
+the shared library below. It requires Cargo, curl, Python 3, tar, and
 the native prerequisites listed by `vfsi-c` and its dependencies.
 
 A build without `--enable-vfsi` contains no VFSI code or dependency. An
@@ -30,20 +30,20 @@ when the environment variables below are absent.
 
 ```sh
 VFSI_IMPL=nfs \
-VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.1-vnfs-0.0.13/target/release/libvfsi_c.so" \
+VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.2-vnfs-0.0.16/target/release/libvfsi_c.so" \
 rsync -a /mounted/source/ /destination/
 ```
 
-On Linux, rsync selects the longest matching NFS mount from
-`/proc/self/mounts` and derives the server, export root, and local mountpoint.
-They can be overridden with `VFSI_HOST`, `VFSI_EXPORT`, and `VFSI_MOUNT`.
+On Linux, the adapter discovers the source's NFS mount and retains its export,
+protocol, port, and supported authentication settings. Explicit connection
+overrides use `VFSI_HOST`, `VFSI_EXPORT`, and `VFSI_MOUNT`.
 Set `VFSI_VERBOSE=1` to report how many entries and directories were cached.
 
 The local test backend uses:
 
 ```sh
 VFSI_IMPL=dummy \
-VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.1-vnfs-0.0.13/target/release/libvfsi_c.so" \
+VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.2-vnfs-0.0.16/target/release/libvfsi_c.so" \
 VFSI_ROOT=/real/backend/root \
 VFSI_MOUNT=/kernel/visible/root \
 rsync -a /kernel/visible/root/ /destination/
@@ -58,9 +58,12 @@ modes, `--one-file-system`, `--hard-links`, daemon modules, and insecure-link
 mode. Symlink and special-file metadata also falls back to the existing rsync
 path one entry at a time.
 
-Each recursive VFSI result is treated as a metadata snapshot. Its directory
-and path indexes live for one source file-list traversal, including all
-incremental-recursion batches, and are freed at file-list EOF. A VFSI open,
+Each bounded listing is treated as a metadata snapshot. Its directory and
+path indexes live only for the current frontier and are released when rsync
+enters another directory or reaches file-list EOF. Rsync applies filters
+before entering children, so excluded subtrees are not prefetched. Adapters
+without complete bounded listings use POSIX enumeration, preserving `--delete`
+safety. A VFSI open,
 listing, ABI, or attribute-validation failure disables the snapshot and uses
 the normal POSIX scan; partial VFSI results are never mixed into that fallback.
 As with a normal rsync source walk, applications should avoid mutating the
