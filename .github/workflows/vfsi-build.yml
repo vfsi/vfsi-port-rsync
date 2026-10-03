@@ -16,7 +16,8 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # libntirpc >= 6.3 is required; Ubuntu 24.04 ships only 4.3.
+    runs-on: ubuntu-26.04
     name: VNFS 0.0.16 / VFSI C ABI v3
     steps:
       - uses: actions/checkout@v7
