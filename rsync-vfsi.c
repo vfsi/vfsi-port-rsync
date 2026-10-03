@@ -38,6 +38,9 @@ struct vfsi_bindings {
 	int (*dummy_open_mount)(const char *, const char *, struct vfsi_fs **);
 	int (*nfs_open_mount_export)(const char *, const char *, const char *,
 				     struct vfsi_fs **);
+	int (*nfs_from_mount)(const char *, struct vfsi_fs **);
+	int (*listdir_with_limits)(struct vfsi_fs *, const char *, size_t, size_t,
+			vfsi_listdir_cb, void *);
 	int (*listdirv)(struct vfsi_fs *, const char *const *, size_t, size_t,
 			bool, vfsi_listdirv_cb, void *);
 	void (*free)(struct vfsi_fs *);
@@ -240,6 +243,10 @@ static int vfsi_load(void)
 	LOAD("vfsi_nfs_open_mount_export", candidate.nfs_open_mount_export);
 	LOAD("vfsi_listdirv", candidate.listdirv);
 	LOAD("vfsi_free", candidate.free);
+	symbol = dlsym(candidate.handle, "vfsi_nfs_from_mount");
+	memcpy(&candidate.nfs_from_mount, &symbol, sizeof(symbol));
+	symbol = dlsym(candidate.handle, "vfsi_listdir_with_limits");
+	memcpy(&candidate.listdir_with_limits, &symbol, sizeof(symbol));
 #undef LOAD
 	vfsi_state.bindings = candidate;
 	vfsi_state.loader_state = 1;
@@ -353,6 +360,13 @@ static int vfsi_open_for(const char *path)
 		vfsi_state.mountpoint = strdup(mount_override);
 		rc = b->dummy_open_mount(root, mount_override, &vfsi_state.fs);
 	} else {
+		if (!host_override && !export_override && !mount_override) {
+			if (!b->nfs_from_mount) return 0;
+			rc = b->nfs_from_mount(path, &vfsi_state.fs);
+			if (rc) return 0;
+			vfsi_state.mountpoint = strdup(path);
+			return 1;
+		}
 		if (!vfsi_find_mount(path, &mount)) {
 			if (!mount_override || !export_override)
 				return 0;
@@ -435,12 +449,13 @@ static void vfsi_add_entry(const char *dir_path, const char *name,
 	}
 	vfsi_state.entries[vfsi_state.entries_nr++] = entry;
 	vfsi_map_put(&vfsi_state.entries_by_path, entry->path, entry);
-	if (attrs->ftype == VFSI_NF4DIR)
-		vfsi_add_dir(entry->path);
+        /* Child directories remain undiscovered until rsync's filters and
+         * incremental recursion choose to enter them. */
 }
 
 struct vfsi_collect_state {
 	int valid;
+	const char *dir;
 };
 
 static bool vfsi_collect(const char *dir, const char *name,
@@ -459,21 +474,52 @@ static bool vfsi_collect(const char *dir, const char *name,
 	return true;
 }
 
+static bool vfsi_collect_one(const char *name, const struct vfsi_attrs *attrs, void *data)
+{
+	struct vfsi_collect_state *state = data;
+	return vfsi_collect(state->dir, name, attrs, data);
+}
+
+/* A frontier cache, not a subtree snapshot. Once rsync enters another
+ * directory it has copied the previous names/attrs into its own file list. */
+static void vfsi_clear_frontier(void)
+{
+	size_t i,j;
+	for (i=0;i<vfsi_state.dirs_nr;i++) {
+		struct vfsi_dir *dir=vfsi_state.dirs[i];
+		for(j=0;j<dir->nr;j++) free(dir->names[j]);
+		free(dir->names); free(dir->path); free(dir);
+	}
+	for(i=0;i<vfsi_state.entries_nr;i++) { free(vfsi_state.entries[i]->path); free(vfsi_state.entries[i]); }
+	free(vfsi_state.dirs); free(vfsi_state.entries);
+	free(vfsi_state.dirs_by_path.slots); free(vfsi_state.entries_by_path.slots);
+	vfsi_state.dirs=NULL; vfsi_state.entries=NULL;
+	vfsi_state.dirs_nr=vfsi_state.dirs_alloc=vfsi_state.entries_nr=vfsi_state.entries_alloc=0;
+	memset(&vfsi_state.dirs_by_path,0,sizeof(vfsi_state.dirs_by_path));
+	memset(&vfsi_state.entries_by_path,0,sizeof(vfsi_state.entries_by_path));
+}
+
 static int vfsi_cache_tree(const char *root)
 {
-	const char *dirs[1] = { root };
-	struct vfsi_collect_state state = { 1 };
+	struct vfsi_collect_state state = { 1, root };
 	int rc;
 
 	if (!vfsi_open_for(root)) {
 		vfsi_state.failed = 1;
 		return 0;
 	}
+	/* A legacy limit stop is indistinguishable from EOF. Never build a
+	 * source snapshot from it: --delete needs a complete source listing. */
+	if (!vfsi_state.bindings.listdir_with_limits) {
+		vfsi_state.failed = 1;
+		return 0;
+	}
+	vfsi_clear_frontier();
 	vfsi_add_dir(root);
-	rc = vfsi_state.bindings.listdirv(vfsi_state.fs, dirs, 1, 0, true,
-					   vfsi_collect, &state);
+	rc = vfsi_state.bindings.listdir_with_limits(vfsi_state.fs, root, 200000,
+		64 * 1024 * 1024, vfsi_collect_one, &state);
 	if (rc || !state.valid) {
-		rprintf(FWARNING, "vfsi: recursive listing failed for %s: %d; using POSIX scan\n",
+		rprintf(FWARNING, "vfsi: directory listing failed for %s: %d; using POSIX scan\n",
 			root, rc);
 		/* Never mix a partial vector snapshot with a POSIX traversal. */
 		rsync_vfsi_reset();

@@ -47,3 +47,7 @@ jobs:
           VFSI_MOUNT="$fixture" \
             ./rsync -a "$fixture/source/" "$fixture/destination/"
           cmp "$fixture/source/input" "$fixture/destination/input"
+      - name: Verify incremental and non-incremental port parity
+        env:
+          VFSI_LIBRARY: ${{ github.workspace }}/build-vfsi-c/vfsi-c-0.3.1-vnfs-0.0.13/target/release/libvfsi_c.so
+        run: sh support/test-vfsi-port.sh

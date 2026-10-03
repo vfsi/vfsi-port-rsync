@@ -1,3 +1,24 @@
+VFSI PORT
+---------
+
+This branch optionally uses the VFSI C adapter for local source-directory
+enumeration. Set `VFSI_IMPL=nfs` and `VFSI_LIBRARY` to the adapter shared
+library. With the development adapter, mounted NFS paths are discovered
+automatically, retaining the mount's security and protocol settings. Older
+adapters without discovery support use the ordinary filesystem path unless
+connection overrides are supplied explicitly.
+Adapters without the complete bounded-listing API always use POSIX directory
+scans, even with explicit connection overrides: a legacy limit stop cannot be
+treated as EOF, especially when `--delete` is enabled.
+
+Directory listings are bounded and cached only for the current frontier;
+excluded directories are not recursively prefetched. Unsupported rsync modes
+retain the existing implementation. This does not accelerate file-data
+transfer or solve kernel/direct-client cache coherence.
+
+After building, run `VFSI_LIBRARY=/path/to/libvfsi_c.so sh support/test-vfsi-port.sh`
+for incremental and non-incremental recursion parity checks.
+
 WHAT IS RSYNC?
 --------------
 
