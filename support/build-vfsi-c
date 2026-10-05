@@ -2,9 +2,9 @@
 
 set -eu
 
-VFSI_C_VERSION=0.3.2
-VNFS_VERSION=0.0.16
-VFSI_C_SHA256=3f5c55d1b861bbe523cca3c34f6d47de9f9becc718dbf98ded8c65a3dceaf9b0
+VFSI_C_VERSION=0.3.4
+VNFS_VERSION=0.0.18
+VFSI_C_SHA256=647704271f42e43347586c55c1085b4a4f3645d3521a4f2a2074389cca2d4273
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_root=${VFSI_BUILD_DIR:-"$root/build-vfsi-c"}

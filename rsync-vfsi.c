@@ -39,10 +39,9 @@ struct vfsi_bindings {
 	int (*nfs_open_mount_export)(const char *, const char *, const char *,
 				     struct vfsi_fs **);
 	int (*nfs_from_mount)(const char *, struct vfsi_fs **);
-	int (*listdir_with_limits)(struct vfsi_fs *, const char *, size_t, size_t,
-			vfsi_listdir_cb, void *);
-	int (*listdirv)(struct vfsi_fs *, const char *const *, size_t, size_t,
-			bool, vfsi_listdirv_cb, void *);
+	int (*listdirs)(struct vfsi_fs *, const char *const *, size_t,
+			const struct vfsi_listing_options *, vfsi_indexed_listdir_cb,
+			void *, struct vfsi_listing_result *);
 	void (*free)(struct vfsi_fs *);
 };
 
@@ -241,12 +240,10 @@ static int vfsi_load(void)
 	}
 	LOAD("vfsi_dummy_open_mount", candidate.dummy_open_mount);
 	LOAD("vfsi_nfs_open_mount_export", candidate.nfs_open_mount_export);
-	LOAD("vfsi_listdirv", candidate.listdirv);
+	LOAD("vfsi_listdirs", candidate.listdirs);
 	LOAD("vfsi_free", candidate.free);
 	symbol = dlsym(candidate.handle, "vfsi_nfs_from_mount");
 	memcpy(&candidate.nfs_from_mount, &symbol, sizeof(symbol));
-	symbol = dlsym(candidate.handle, "vfsi_listdir_with_limits");
-	memcpy(&candidate.listdir_with_limits, &symbol, sizeof(symbol));
 #undef LOAD
 	vfsi_state.bindings = candidate;
 	vfsi_state.loader_state = 1;
@@ -455,7 +452,6 @@ static void vfsi_add_entry(const char *dir_path, const char *name,
 
 struct vfsi_collect_state {
 	int valid;
-	const char *dir;
 };
 
 static bool vfsi_collect(const char *dir, const char *name,
@@ -474,10 +470,11 @@ static bool vfsi_collect(const char *dir, const char *name,
 	return true;
 }
 
-static bool vfsi_collect_one(const char *name, const struct vfsi_attrs *attrs, void *data)
+static bool vfsi_collect_indexed(size_t index, const char *dir, const char *name,
+			const struct vfsi_attrs *attrs, void *data)
 {
-	struct vfsi_collect_state *state = data;
-	return vfsi_collect(state->dir, name, attrs, data);
+	(void)index;
+	return vfsi_collect(dir, name, attrs, data);
 }
 
 /* A frontier cache, not a subtree snapshot. Once rsync enters another
@@ -501,23 +498,29 @@ static void vfsi_clear_frontier(void)
 
 static int vfsi_cache_tree(const char *root)
 {
-	struct vfsi_collect_state state = { 1, root };
+	struct vfsi_collect_state state = { 1 };
 	int rc;
 
 	if (!vfsi_open_for(root)) {
 		vfsi_state.failed = 1;
 		return 0;
 	}
-	/* A legacy limit stop is indistinguishable from EOF. Never build a
-	 * source snapshot from it: --delete needs a complete source listing. */
-	if (!vfsi_state.bindings.listdir_with_limits) {
-		vfsi_state.failed = 1;
-		return 0;
-	}
 	vfsi_clear_frontier();
 	vfsi_add_dir(root);
-	rc = vfsi_state.bindings.listdir_with_limits(vfsi_state.fs, root, 200000,
-		64 * 1024 * 1024, vfsi_collect_one, &state);
+	{
+		struct vfsi_listing_options options = {
+			.max_entries = 200000,
+			.max_path_bytes = 64 * 1024 * 1024,
+			.attributes = VFSI_ATTR_MODE | VFSI_ATTR_SIZE | VFSI_ATTR_NLINK |
+				VFSI_ATTR_FILEID | VFSI_ATTR_BLOCKS | VFSI_ATTR_UID |
+				VFSI_ATTR_GID | VFSI_ATTR_ATIME | VFSI_ATTR_MTIME | VFSI_ATTR_CTIME
+		};
+		struct vfsi_listing_result result = { 0 };
+		rc = vfsi_state.bindings.listdirs(vfsi_state.fs, &root, 1,
+			&options, vfsi_collect_indexed, &state, &result);
+		if (!rc && result.completion != 1)
+			rc = EIO;
+	}
 	if (rc || !state.valid) {
 		rprintf(FWARNING, "vfsi: directory listing failed for %s: %d; using POSIX scan\n",
 			root, rc);
