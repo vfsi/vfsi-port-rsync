@@ -7,18 +7,18 @@ data. VFSI is optional at build time and off by default at runtime.
 
 ## Build
 
-This port targets VNFS 0.0.18 through the public `vfsi-c` 0.3.4 package and
+This port targets VNFS 0.0.19 through the public `vfsi-c` 0.3.5 package and
 VFSI C ABI v3. Fetch and build that release set from crates.io with:
 
 ```sh
 support/build-vfsi-c
-CPPFLAGS=-I"$PWD/build-vfsi-c/vfsi-c-0.3.4-vnfs-0.0.18/source/include" \
+CPPFLAGS=-I"$PWD/build-vfsi-c/vfsi-c-0.3.5-vnfs-0.0.19/source/include" \
     ./configure --enable-vfsi
 make
 ```
 
 The helper verifies the published `vfsi-c` archive checksum, selects the
-public VNFS 0.0.18 crate, rejects Git-sourced Cargo dependencies, and builds
+public VNFS 0.0.19 crate, rejects Git-sourced Cargo dependencies, and builds
 the shared library below. It requires Cargo, curl, Python 3, tar, and
 the native prerequisites listed by `vfsi-c` and its dependencies.
 
@@ -30,7 +30,7 @@ when the environment variables below are absent.
 
 ```sh
 VFSI_IMPL=nfs \
-VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.4-vnfs-0.0.18/target/release/libvfsi_c.so" \
+VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.5-vnfs-0.0.19/target/release/libvfsi_c.so" \
 rsync -a /mounted/source/ /destination/
 ```
 
@@ -43,7 +43,7 @@ The local test backend uses:
 
 ```sh
 VFSI_IMPL=dummy \
-VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.4-vnfs-0.0.18/target/release/libvfsi_c.so" \
+VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.5-vnfs-0.0.19/target/release/libvfsi_c.so" \
 VFSI_ROOT=/real/backend/root \
 VFSI_MOUNT=/kernel/visible/root \
 rsync -a /kernel/visible/root/ /destination/

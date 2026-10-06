@@ -18,7 +18,7 @@ jobs:
   test:
     # libntirpc >= 6.3 is required; Ubuntu 24.04 ships only 4.3.
     runs-on: ubuntu-26.04
-    name: VNFS 0.0.18 / VFSI C ABI v3
+    name: VNFS 0.0.19 / VFSI C ABI v3
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -32,7 +32,7 @@ jobs:
         run: support/build-vfsi-c
       - name: Build rsync with VFSI
         run: |
-          CPPFLAGS="-I$PWD/build-vfsi-c/vfsi-c-0.3.4-vnfs-0.0.18/source/include" \
+          CPPFLAGS="-I$PWD/build-vfsi-c/vfsi-c-0.3.5-vnfs-0.0.19/source/include" \
             ./configure --enable-vfsi --disable-md2man --disable-xxhash \
               --disable-zstd --disable-lz4 --disable-idn
           make -j2
@@ -43,12 +43,12 @@ jobs:
           mkdir -p "$fixture/source" "$fixture/destination"
           printf 'vfsi public package smoke\n' >"$fixture/source/input"
           VFSI_IMPL=dummy \
-          VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.4-vnfs-0.0.18/target/release/libvfsi_c.so" \
+          VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.5-vnfs-0.0.19/target/release/libvfsi_c.so" \
           VFSI_ROOT="$fixture" \
           VFSI_MOUNT="$fixture" \
             ./rsync -a "$fixture/source/" "$fixture/destination/"
           cmp "$fixture/source/input" "$fixture/destination/input"
       - name: Verify incremental and non-incremental port parity
         env:
-          VFSI_LIBRARY: ${{ github.workspace }}/build-vfsi-c/vfsi-c-0.3.4-vnfs-0.0.18/target/release/libvfsi_c.so
+          VFSI_LIBRARY: ${{ github.workspace }}/build-vfsi-c/vfsi-c-0.3.5-vnfs-0.0.19/target/release/libvfsi_c.so
         run: sh support/test-vfsi-port.sh
