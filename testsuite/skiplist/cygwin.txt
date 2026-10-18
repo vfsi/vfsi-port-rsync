@@ -10,6 +10,7 @@ acls
 acls-default
 acls-depth
 acls-unpinnable
+append-abort-mid-write  # the mid-write hook is an LD_PRELOAD, Linux-only
 backup-acl-xattr-cache
 backup-dir-symlink-race
 basis-xname-traversal
@@ -29,6 +30,7 @@ daemon-module-chdir-symlink
 daemon-module-private-parent
 daemon-secrets-file-symlink
 daemon-stdin-local-socket             # Cygwin Python has no AF_UNIX socketpair
+daemon-stdin-unix-listener            # Cygwin cannot pass a named AF_UNIX listener as daemon stdin
 devices
 dir-sgid
 early-input-symlink
@@ -68,4 +70,5 @@ source-change-size-continues
 symlink-dest-backupdir
 symlink-race-dest
 symlink-race-relative-dest
+symlink-unix-perms  # platform does not support changing symlink permissions
 temp-dir-symlink-injection
