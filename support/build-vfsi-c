@@ -39,8 +39,13 @@ if test ! -f "$source_dir/.rsync-vfsi-release"; then
 	mv "$tmp_source" "$source_dir"
 fi
 
+# Pre-1.0 patch requirements do not admit the next patch version. Retarget the
+# verified archive's build manifest before resolving the requested public crate.
+cargo add --manifest-path "$source_dir/Cargo.toml" "vnfs@=$VNFS_VERSION"
 cargo update --manifest-path "$source_dir/Cargo.toml" \
 	--package vnfs --precise "$VNFS_VERSION"
+cargo update --manifest-path "$source_dir/Cargo.toml" \
+	--package libntirpc-sys --precise 0.3.3
 
 cargo metadata --locked --format-version 1 \
 	--manifest-path "$source_dir/Cargo.toml" \
