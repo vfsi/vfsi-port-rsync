@@ -45,6 +45,7 @@ extern int am_sender;
 extern int am_generator;
 extern int inc_recurse;
 extern int always_checksum;
+extern int remove_source_files;
 extern int module_id;
 extern int ignore_errors;
 extern int numeric_ids;
@@ -323,8 +324,10 @@ static int sender_source_root_fd_for(struct sender_source_root *root)
 
 	if (sender_source_root_fd_owner == root && sender_source_root_fd >= 0)
 		return sender_source_root_fd;
-	if (sender_source_root_fd >= 0)
+	if (sender_source_root_fd >= 0) {
+		reset_dir_fd_cache();
 		close(sender_source_root_fd);
+	}
 	sender_source_root_fd = -1;
 	sender_source_root_fd_owner = NULL;
 
@@ -356,13 +359,13 @@ int open_sender_source_path(const char *path, int flags, int *matched)
 	struct sender_source_root *root, *best = NULL;
 	char full[MAXPATHLEN], *rel;
 	size_t best_len = 0;
-	int rootfd, fd, saved_errno;
+	int rootfd;
 
 	*matched = 0;
 	if (!sender_source_roots)
 		return -1;
 	if (sender_source_full_path(path, full, sizeof full) < 0)
-		return -1;
+		goto no_root;
 	for (root = sender_source_roots; root; root = root->next) {
 		size_t len = strlen(root->path);
 		if (len > best_len && strncmp(full, root->path, len) == 0
@@ -372,7 +375,7 @@ int open_sender_source_path(const char *path, int flags, int *matched)
 		}
 	}
 	if (!best)
-		return -1;
+		goto no_root;
 
 	*matched = 1;
 	rootfd = sender_source_root_fd_for(best);
@@ -381,11 +384,20 @@ int open_sender_source_path(const char *path, int flags, int *matched)
 	rel = full + best_len;
 	while (*rel == '/')
 		rel++;
-	fd = secure_relative_open_at(rootfd, *rel ? rel : ".", flags, 0);
-	saved_errno = errno;
-	errno = saved_errno;
-	return fd;
+	if (remove_source_files)
+		return secure_relative_open_at(rootfd, *rel ? rel : ".", flags, 0);
+	return open_sender_root_entry(rootfd, *rel ? rel : ".", flags);
+
+  no_root:
+	if (sender_source_root_fd >= 0) {
+		int e = errno;
+		reset_dir_fd_cache();
+		errno = e;
+	}
+	return -1;
 #else
+	(void)path;
+	(void)flags;
 	*matched = 0;
 	errno = ENOSYS;
 	return -1;
@@ -394,8 +406,10 @@ int open_sender_source_path(const char *path, int flags, int *matched)
 
 void clear_sender_source_roots(void)
 {
-	if (sender_source_root_fd >= 0)
+	if (sender_source_root_fd >= 0) {
+		reset_dir_fd_cache();
 		close(sender_source_root_fd);
+	}
 	sender_source_root_fd = -1;
 	sender_source_root_fd_owner = NULL;
 	while (sender_source_roots) {
@@ -2271,14 +2285,21 @@ static void interpret_stat_error(const char *fname, int is_dir)
 static DIR *secure_opendir(const char *fbuf)
 {
 	int dfd, fl, matched;
+	int dir_flags = O_RDONLY | O_CLOEXEC;
 	DIR *d;
 
+#ifdef O_DIRECTORY
+	dir_flags |= O_DIRECTORY;
+#elif defined O_NONBLOCK
+	/* Avoid blocking on a raced special file before fdopendir validates it. */
+	dir_flags |= O_NONBLOCK;
+#endif
 	if (filesfrom_owner_walk_active()) {
 		/* The source base is operator-selected, while each list entry may not
 		 * be. Follow only trusted-owned symlinks while opening the directory. */
-		dfd = open_no_attacker_symlinks(fbuf, O_RDONLY | O_DIRECTORY, 0);
+		dfd = open_no_attacker_symlinks(fbuf, dir_flags, 0);
 	} else if (!am_daemon && am_sender
-	 && (dfd = open_sender_source_path(fbuf, O_RDONLY | O_DIRECTORY, &matched), matched)) {
+	 && (dfd = open_sender_source_path(fbuf, dir_flags, &matched), matched)) {
 		/* The command-line directory is the operator-selected transfer root.
 		 * Follow that root, then keep every recursive scan beneath its held fd. */
 	} else if (am_daemon && (!am_chrooted || module_dirlen)
@@ -2307,23 +2328,23 @@ static DIR *secure_opendir(const char *fbuf)
 			return NULL;
 		}
 		dfd = secure_relative_open_at(module_dirfd, *modrel ? modrel : ".",
-					      O_RDONLY | O_DIRECTORY, 0);
+					      dir_flags, 0);
 	} else if (*fbuf == '/') {
 		/* An absolute scan path (an absolute --relative / --files-from name, or a
 		 * "/" transfer root): anchor at "/" -- operator-named, trusted. */
 		const char *relp = fbuf;
 		while (*relp == '/')
 			relp++;
-		dfd = secure_relative_open("/", relp, O_RDONLY | O_DIRECTORY, 0);
+		dfd = secure_relative_open("/", relp, dir_flags, 0);
 	} else {
 		/* Non-daemon (or chrooted) sender: confine beneath the cwd the sender
 		 * chdir'd into (the transfer root). */
-		dfd = secure_relative_open(NULL, fbuf, O_RDONLY | O_DIRECTORY, 0);
+		dfd = secure_relative_open(NULL, fbuf, dir_flags, 0);
 	}
 
 	if (dfd < 0)
 		return NULL;
-	if ((fl = fcntl(dfd, F_GETFD)) >= 0)
+	if (!O_CLOEXEC && (fl = fcntl(dfd, F_GETFD)) >= 0)
 		fcntl(dfd, F_SETFD, fl | FD_CLOEXEC);
 	if (!(d = fdopendir(dfd))) {
 		int save = errno;

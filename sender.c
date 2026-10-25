@@ -82,7 +82,7 @@ static const char *orig_subdir(const char *path)
 
 static int secure_sender_parent_fd(struct file_struct *file, const char *fname, const char **bname_p)
 {
-#ifdef AT_FDCWD
+#if defined AT_FDCWD && defined O_NOFOLLOW && defined O_DIRECTORY
 	const char *path, *slash, *relp, *bslash, *fslash;
 	char secure_path[MAXPATHLEN];
 	int dfd, fl, slen;
@@ -313,11 +313,13 @@ static int sender_open_copylinks_confined(const char *anchor, const char *relpat
 		if (n < 0) {
 			/* EINVAL: not a symlink -> the resolved target file.  Open it
 			 * O_NOFOLLOW (a raced symlink flip is still refused). */
-			fd = e == EINVAL
-			   ? openat(pdfd, bname, O_RDONLY | O_NOFOLLOW | O_BINARY | extra, 0)
-			   : -1;
+			if (e == EINVAL) {
+				fd = openat(pdfd, bname, O_RDONLY | O_NOFOLLOW | O_BINARY | extra, 0);
+				e = fd < 0 ? errno : 0;
+			} else
+				fd = -1;
 			close(pdfd);
-			if (n < 0 && e != EINVAL)
+			if (fd < 0)
 				errno = e;
 			return fd;
 		}
@@ -716,7 +718,21 @@ void send_files(int f_in, int f_out)
 		} else {
 			fd = do_open_checklinks(fname);
 		}
-		if (fd == -1) {
+		/* A file may have become a directory after the file-list scan.
+		 * The direct sender-root open shares this post-open type check. */
+		if (fd >= 0 && do_fstat(fd, &st) != 0) {
+			io_error |= IOERR_GENERAL;
+			rsyserr(FERROR_XFER, errno, "fstat failed");
+			free_sums(s);
+			close(fd);
+			exit_cleanup(RERR_FILEIO);
+		}
+		if (fd >= 0 && S_ISDIR(st.st_mode)) {
+			close(fd);
+			fd = -1;
+			errno = EISDIR;
+		}
+		if (fd < 0) {
 			if (errno == ENOENT) {
 				enum logcode c = am_daemon && protocol_version < 28 ? FERROR : FWARNING;
 				io_error |= IOERR_VANISHED;
@@ -732,15 +748,6 @@ void send_files(int f_in, int f_out)
 			if (protocol_version >= 30)
 				send_msg_int(MSG_NO_SEND, ndx);
 			continue;
-		}
-
-		/* map the local file */
-		if (do_fstat(fd, &st) != 0) {
-			io_error |= IOERR_GENERAL;
-			rsyserr(FERROR_XFER, errno, "fstat failed");
-			free_sums(s);
-			close(fd);
-			exit_cleanup(RERR_FILEIO);
 		}
 
 		if (IS_DEVICE(st.st_mode)) {
@@ -813,6 +820,7 @@ void send_files(int f_in, int f_out)
 		/* Flag that we actually sent this entry. */
 		file->flags |= FLAG_FILE_SENT;
 	}
+	finish_progress();
 	if (make_backups < 0)
 		make_backups = -make_backups;
 

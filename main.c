@@ -45,6 +45,7 @@ extern int am_daemon;
 extern int inc_recurse;
 extern int blocking_io;
 extern int always_checksum;
+extern int time_only;
 extern int remove_source_files;
 extern int output_needs_newline;
 extern int called_from_signal_handler;
@@ -253,6 +254,7 @@ void read_del_stats(int f)
 static void become_copy_as_user()
 {
 	char *gname;
+	const struct passwd *pw = NULL;
 	uid_t uid;
 	gid_t gid;
 
@@ -276,7 +278,6 @@ static void become_copy_as_user()
 			exit_cleanup(RERR_SYNTAX);
 		}
 	} else {
-		struct passwd *pw;
 		if ((pw = getpwuid(uid)) == NULL) {
 			rsyserr(FERROR, errno, "getpwuid failed");
 			exit_cleanup(RERR_SYNTAX);
@@ -295,7 +296,7 @@ static void become_copy_as_user()
 	}
 #endif
 #ifdef HAVE_INITGROUPS
-	if (!gname && initgroups(copy_as, gid) < 0) {
+	if (!gname && initgroups(pw->pw_name, gid) < 0) {
 		rsyserr(FERROR, errno, "initgroups failed");
 		exit_cleanup(RERR_SYNTAX);
 	}
@@ -953,7 +954,7 @@ static void read_final_goodbye(int f_in, int f_out)
 
 static void do_server_sender(int f_in, int f_out, int argc, char *argv[])
 {
-	struct file_list *flist;
+	const struct file_list *flist;
 	char *dir;
 
 	if (DEBUG_GTE(SEND, 1))
@@ -1309,6 +1310,9 @@ void start_server(int f_in, int f_out, int argc, char *argv[])
 
 	if (protocol_version >= 23)
 		io_start_multiplex_out(f_out);
+	/* Priority diagnostics need the negotiated message channel.
+	 * File-list work starts below. */
+	niceness_apply();
 	if (am_daemon && io_timeout && protocol_version >= 31)
 		send_msg_int(MSG_IO_TIMEOUT, io_timeout);
 
@@ -1340,10 +1344,11 @@ void start_server(int f_in, int f_out, int argc, char *argv[])
  * for rsyncd, remote-shell, and local connections. */
 int client_run(int f_in, int f_out, pid_t pid, int argc, char *argv[])
 {
-	struct file_list *flist = NULL;
+	struct file_list *flist;
 	int exit_code = 0, exit_code2 = 0;
 	char *local_name = NULL;
 
+	niceness_apply();
 	cleanup_child_pid = pid;
 	if (!read_batch) {
 		set_nonblocking(f_in);
@@ -1551,6 +1556,10 @@ static int start_client(int argc, char *argv[])
 		old_style_args = 2;
 		trust_sender_args = trust_sender_filter = 1;
 	}
+	if (time_only && am_sender && !local_server) {
+		rprintf(FERROR, "--time-only requires a local receiver or a remote source\n");
+		exit_cleanup(RERR_SYNTAX);
+	}
 
 	if (!rsync_port && remote_argc && !**remote_argv) /* Turn an empty arg into a dot dir. */
 		*remote_argv = ".";
@@ -1720,8 +1729,10 @@ static void siginfo_handler(UNUSED(int val))
 }
 #endif
 
-void remember_children(UNUSED(int val))
+static void remember_children(UNUSED(int val))
 {
+	int saved_errno = errno;
+
 #ifdef WNOHANG
 	int cnt, status;
 	pid_t pid;
@@ -1742,6 +1753,26 @@ void remember_children(UNUSED(int val))
 	}
 #endif
 #ifndef HAVE_SIGACTION
+	signal(SIGCHLD, remember_children);
+#endif
+	errno = saved_errno;
+}
+
+void install_child_exit_handler(void)
+{
+#ifdef HAVE_SIGACTION
+	struct sigaction action = {0};
+
+	action.sa_handler = remember_children;
+	action.sa_flags = SA_NOCLDSTOP;
+	sigemptyset(&action.sa_mask);
+#ifdef SA_RESTART
+	/* Child exit is not cancellation. Stdio may discard buffered output
+	 * when a flush fails, so restart the underlying syscall instead. */
+	action.sa_flags |= SA_RESTART;
+#endif
+	sigaction(SIGCHLD, &action, NULL);
+#else
 	signal(SIGCHLD, remember_children);
 #endif
 }
@@ -1848,12 +1879,13 @@ int main(int argc,char *argv[])
 	sigset_t sigmask;
 
 	sigemptyset(&sigmask);
+	sigaddset(&sigmask, SIGCHLD);
 # endif
 	sigact.sa_flags = SA_NOCLDSTOP;
 #endif
 	SIGACTMASK(SIGUSR1, sigusr1_handler);
 	SIGACTMASK(SIGUSR2, sigusr2_handler);
-	SIGACTMASK(SIGCHLD, remember_children);
+	install_child_exit_handler();
 #ifdef MAINTAINER_MODE
 	SIGACTMASK(SIGSEGV, rsync_panic_handler);
 	SIGACTMASK(SIGFPE, rsync_panic_handler);
