@@ -999,9 +999,9 @@ static int copy_altdest_file(const char *src, const char *dest, struct file_stru
 static int basis_link_stat(const char *path, STRUCT_STAT *stp)
 {
 	extern int am_chrooted;
-	extern int operator_path_resolve;
 	extern unsigned int module_dirlen;
 #if defined AT_FDCWD && defined O_NOFOLLOW && defined O_DIRECTORY
+	extern int operator_path_resolve;
 	/* The basis dir (--link-dest/--compare-dest/--copy-dest) is an operator-
 	 * supplied path.  For a non-daemon receiver, resolve it with the ownership
 	 * walk: a symlink component owned by uid 0 or the euid (the operator's own
@@ -1603,7 +1603,7 @@ static int gen_entry_copy_xattrs(const char *src, const char *fname, struct file
 	 * relative basis goes through the RESOLVE_BENEATH resolver; an absolute one
 	 * through the operator ownership walk.  Refuse (don't path-read) when we are
 	 * meant to confine but can't pin; a non-hardened receiver path-reads (sfd<0). */
-#if defined AT_FDCWD && defined O_NOFOLLOW
+#if defined AT_FDCWD && defined O_NOFOLLOW && defined O_DIRECTORY
 	if (secure_relpath_active() && src && *src && !symlink_optout_allowed()) {
 		int odir = 0;
 #ifdef O_DIRECTORY
@@ -2253,6 +2253,7 @@ static void recv_generator(char *fname, struct file_struct *file, int ndx,
 	if (statret != 0) {
 #ifdef SUPPORT_HARD_LINKS
 		if (preserve_hard_links && F_HLINK_NOT_LAST(file)) {
+			file->flags |= FLAG_HLINK_WAIT;
 			cur_flist->in_progress++;
 			goto cleanup;
 		}
@@ -2358,6 +2359,7 @@ static void recv_generator(char *fname, struct file_struct *file, int ndx,
 		/* pretend the file didn't exist */
 #ifdef SUPPORT_HARD_LINKS
 		if (preserve_hard_links && F_HLINK_NOT_LAST(file)) {
+			file->flags |= FLAG_HLINK_WAIT;
 			cur_flist->in_progress++;
 			goto cleanup;
 		}
@@ -2568,8 +2570,6 @@ int atomic_create(struct file_struct *file, char *fname, const char *slnk, const
 	if (!skip_atomic) {
 		if (gen_entry_rename(tmpname, fname, file) < 0) {
 			char *full_tmpname = strdup(full_fname(tmpname));
-			if (full_tmpname == NULL)
-				out_of_memory("atomic_create");
 			rsyserr(FERROR_XFER, errno, "rename %s -> \"%s\" failed",
 				full_tmpname, full_fname(fname));
 			free(full_tmpname);
@@ -2595,7 +2595,10 @@ static void handle_skipped_hlink(struct file_struct *file, int itemizing,
 		return;
 
 	file = cur_flist->files[new_last_ndx - cur_flist->ndx_start];
-	cur_flist->in_progress--; /* undo prior increment */
+	if (file->flags & FLAG_HLINK_WAIT) {
+		file->flags &= ~FLAG_HLINK_WAIT;
+		cur_flist->in_progress--; /* undo prior increment */
+	}
 	f_name(file, fbuf);
 	recv_generator(fbuf, file, new_last_ndx, itemizing, code, f_out);
 

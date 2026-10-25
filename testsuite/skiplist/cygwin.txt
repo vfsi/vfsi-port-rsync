@@ -40,6 +40,7 @@ fake-super-backup-fifo-regression
 files-from-leak
 filter-leak
 filter-merge-symlink
+hardlinks-emlink-recovery                # LD_PRELOAD hook
 insecure-links-admin-optout
 link-dest-symlink-enotsup                # the ENOTSUP hard-link hook is an LD_PRELOAD, Linux-only
 log-file-symlink
@@ -58,6 +59,7 @@ pseudo-paths
 pseudo-paths-daemon
 read-batch-pipe
 rename-mixed-parent-transfer
+rrsync-receiver-file-arg
 rrsync-sender-leaf-flip
 rrsync-sender-parent-pin
 rrsync-symlink
