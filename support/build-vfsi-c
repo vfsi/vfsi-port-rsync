@@ -3,7 +3,7 @@
 set -eu
 
 VFSI_C_VERSION=0.3.9
-VNFS_VERSION=0.0.25
+VNFS_VERSION=0.0.26
 VFSI_C_SHA256=ae4d749bdb77fc2b9290ae7baa2daa0328b2e44a53ff7e9edf9d46266df421c2
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
