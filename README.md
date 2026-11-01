@@ -178,3 +178,8 @@ distribution, or at [the Free Software Foundation][10].
 
 [9]: https://github.com/RsyncProject/rsync/blob/master/COPYING
 [10]: https://www.fsf.org/licenses/gpl.html
+
+Set `VFSI_TRACE=1` to report successful vector listings and distinguish them
+from safe fallback. The port's parity script asserts these completion markers;
+missing libraries and incompatible adapters must fall back before results are
+exposed. Connections and short-lived metadata snapshots have separate lifetimes.
