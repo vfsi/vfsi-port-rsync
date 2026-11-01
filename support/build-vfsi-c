@@ -2,9 +2,9 @@
 
 set -eu
 
-VFSI_C_VERSION=0.3.9
-VNFS_VERSION=0.0.26
-VFSI_C_SHA256=ae4d749bdb77fc2b9290ae7baa2daa0328b2e44a53ff7e9edf9d46266df421c2
+VFSI_C_VERSION=0.3.11
+VNFS_VERSION=0.0.27
+VFSI_C_SHA256=5f4a4af41f88b3f2ade313b38825c9120ae3ed2a8ded6180a058ecd6f556871b
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_root=${VFSI_BUILD_DIR:-"$root/build-vfsi-c"}
@@ -53,10 +53,14 @@ cargo metadata --locked --format-version 1 \
 import json
 import sys
 
+metadata = json.load(sys.stdin)
+root = metadata["resolve"]["root"]
+if root is None:
+    raise SystemExit("expected a standalone vfsi-c SDK package")
 bad = []
-for package in json.load(sys.stdin)["packages"]:
+for package in metadata["packages"]:
     source = package["source"]
-    if source is not None and not source.startswith("registry+"):
+    if package["id"] != root and (source is None or not source.startswith("registry+")):
         bad.append(f"{package['\''name'\'']} {source}")
 if bad:
     raise SystemExit("non-registry Cargo dependencies:\n" + "\n".join(bad))
@@ -75,3 +79,8 @@ printf '%s\n' \
 	"VFSI C header: $source_dir/include/vfsi.h" \
 	"VFSI C library: $library" \
 	"VNFS version: $VNFS_VERSION (crates.io only)"
+
+# CI consumes the actual installation paths instead of duplicating pin strings.
+if test -n "${GITHUB_OUTPUT:-}"; then
+	printf 'include=%s\nlibrary=%s\n' "$source_dir/include" "$library" >>"$GITHUB_OUTPUT"
+fi
