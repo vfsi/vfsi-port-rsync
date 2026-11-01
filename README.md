@@ -3,7 +3,7 @@ VFSI PORT
 
 This branch optionally uses the VFSI C adapter for local source-directory
 enumeration. Set `VFSI_IMPL=nfs` and `VFSI_LIBRARY` to the adapter shared
-library. With the development adapter, mounted NFS paths are discovered
+library. With the published adapter, mounted NFS paths are discovered
 automatically, retaining the mount's security and protocol settings. Older
 adapters without discovery support use the ordinary filesystem path unless
 connection overrides are supplied explicitly.
@@ -15,6 +15,10 @@ Directory listings are bounded and cached only for the current frontier;
 excluded directories are not recursively prefetched. Unsupported rsync modes
 retain the existing implementation. This does not accelerate file-data
 transfer or solve kernel/direct-client cache coherence.
+
+`support/build-vfsi-c` builds checksum-verified `vfsi-c` 0.3.11 with `vnfs`
+0.0.27 from crates.io. CI uses the header and library paths emitted by this
+builder, retaining C ABI v3.
 
 After building, run `VFSI_LIBRARY=/path/to/libvfsi_c.so sh support/test-vfsi-port.sh`
 for incremental and non-incremental recursion parity checks.

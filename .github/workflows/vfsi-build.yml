@@ -18,7 +18,7 @@ jobs:
   test:
     # The public native dependency builds pinned ntirpc source.
     runs-on: ubuntu-26.04
-    name: VNFS 0.0.26 / VFSI C ABI v3
+    name: Published VFSI SDK / C ABI v3
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -29,26 +29,32 @@ jobs:
             libclang-dev libkrb5-dev \
             liburcu-dev make pkg-config
       - name: Build VFSI from public crates
+        id: sdk
         run: support/build-vfsi-c
       - name: Build rsync with VFSI
+        env:
+          VFSI_INCLUDE: ${{ steps.sdk.outputs.include }}
         run: |
-          CPPFLAGS="-I$PWD/build-vfsi-c/vfsi-c-0.3.9-vnfs-0.0.26/source/include" \
+          CPPFLAGS="-I$VFSI_INCLUDE" \
             ./configure --enable-vfsi --disable-md2man --disable-xxhash \
               --disable-zstd --disable-lz4 --disable-idn
           make -j2
       - name: Smoke test the public VFSI library
+        env:
+          VFSI_LIBRARY: ${{ steps.sdk.outputs.library }}
         run: |
           fixture=$(mktemp -d)
           trap 'rm -rf "$fixture"' EXIT
           mkdir -p "$fixture/source" "$fixture/destination"
           printf 'vfsi public package smoke\n' >"$fixture/source/input"
-          VFSI_IMPL=dummy \
-          VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.9-vnfs-0.0.26/target/release/libvfsi_c.so" \
+          VFSI_VERBOSE=1 VFSI_IMPL=dummy \
           VFSI_ROOT="$fixture" \
           VFSI_MOUNT="$fixture" \
-            ./rsync -a "$fixture/source/" "$fixture/destination/"
+            ./rsync -a "$fixture/source/" "$fixture/destination/" >"$fixture/trace" 2>&1
+          cat "$fixture/trace"
+          grep -q 'vfsi: cached ' "$fixture/trace"
           cmp "$fixture/source/input" "$fixture/destination/input"
       - name: Verify incremental and non-incremental port parity
         env:
-          VFSI_LIBRARY: ${{ github.workspace }}/build-vfsi-c/vfsi-c-0.3.9-vnfs-0.0.26/target/release/libvfsi_c.so
+          VFSI_LIBRARY: ${{ steps.sdk.outputs.library }}
         run: sh support/test-vfsi-port.sh
