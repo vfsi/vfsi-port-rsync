@@ -9,6 +9,7 @@
 #include "ifuncs.h"
 #include "rsync-vfsi.h"
 #include <vfsi.h>
+#include <vfsi_dynamic.h>
 
 #if VFSI_ABI_VERSION != 3
 #error "rsync VFSI support requires VFSI C ABI v3"
@@ -24,25 +25,15 @@ extern int copy_unsafe_links;
 extern int insecure_links;
 extern int one_file_system;
 extern int preserve_hard_links;
+extern int preserve_uid;
+extern int preserve_gid;
+extern int preserve_atimes;
 extern int module_id;
 extern char curr_dir[MAXPATHLEN];
 
 enum {
 	VFSI_NF4REG = 1,
 	VFSI_NF4DIR = 2,
-};
-
-struct vfsi_bindings {
-	void *handle;
-	uint32_t (*abi_version)(void);
-	int (*dummy_open_mount)(const char *, const char *, struct vfsi_fs **);
-	int (*nfs_open_mount_export)(const char *, const char *, const char *,
-				     struct vfsi_fs **);
-	int (*nfs_from_mount)(const char *, struct vfsi_fs **);
-	int (*listdirs)(struct vfsi_fs *, const char *const *, size_t,
-			const struct vfsi_listing_options *, vfsi_indexed_listdir_cb,
-			void *, struct vfsi_listing_result *);
-	void (*free)(struct vfsi_fs *);
 };
 
 struct vfsi_map_slot {
@@ -70,7 +61,7 @@ struct vfsi_entry {
 };
 
 static struct {
-	struct vfsi_bindings bindings;
+	vfsi_dynamic_api bindings;
 	int loader_state;
 	struct vfsi_fs *fs;
 	char *mountpoint;
@@ -202,23 +193,10 @@ static int vfsi_eligible(void)
 	return 1;
 }
 
-static int vfsi_load_symbol(void *handle, const char *name, void **out)
-{
-	void *symbol = dlsym(handle, name);
-
-	if (!symbol) {
-		rprintf(FWARNING, "vfsi: cannot load %s: %s\n", name, dlerror());
-		return 0;
-	}
-	*out = symbol;
-	return 1;
-}
-
 static int vfsi_load(void)
 {
-	struct vfsi_bindings candidate = { 0 };
+	vfsi_dynamic_api candidate = { 0 };
 	const char *library = getenv("VFSI_LIBRARY");
-	void *symbol;
 
 	if (vfsi_state.loader_state)
 		return vfsi_state.loader_state > 0;
@@ -227,24 +205,10 @@ static int vfsi_load(void)
 		rprintf(FWARNING, "vfsi: cannot load %s: %s\n", library, dlerror());
 		goto fail;
 	}
-#define LOAD(name, field) do { \
-	if (!vfsi_load_symbol(candidate.handle, name, &symbol)) \
-		goto fail; \
-	memcpy(&(field), &symbol, sizeof(symbol)); \
-} while (0)
-	LOAD("vfsi_abi_version", candidate.abi_version);
-	if (candidate.abi_version() != VFSI_ABI_VERSION) {
-		rprintf(FWARNING, "vfsi: incompatible ABI (need %d)\n",
-			VFSI_ABI_VERSION);
+	if (vfsi_dynamic_load(&candidate, candidate.handle) ||
+	    !candidate.listdirs)
 		goto fail;
-	}
-	LOAD("vfsi_dummy_open_mount", candidate.dummy_open_mount);
-	LOAD("vfsi_nfs_open_mount_export", candidate.nfs_open_mount_export);
-	LOAD("vfsi_listdirs", candidate.listdirs);
-	LOAD("vfsi_free", candidate.free);
-	symbol = dlsym(candidate.handle, "vfsi_nfs_from_mount");
-	memcpy(&candidate.nfs_from_mount, &symbol, sizeof(symbol));
-#undef LOAD
+
 	vfsi_state.bindings = candidate;
 	vfsi_state.loader_state = 1;
 	return 1;
@@ -337,7 +301,7 @@ static int vfsi_find_mount(const char *path, struct vfsi_mount *result)
 
 static int vfsi_open_for(const char *path)
 {
-	struct vfsi_bindings *b = &vfsi_state.bindings;
+	vfsi_dynamic_api *b = &vfsi_state.bindings;
 	const char *impl = getenv("VFSI_IMPL");
 	const char *host_override = getenv("VFSI_HOST");
 	const char *export_override = getenv("VFSI_EXPORT");
@@ -352,7 +316,7 @@ static int vfsi_open_for(const char *path)
 	if (!strcmp(impl, "dummy")) {
 		const char *root = getenv("VFSI_ROOT");
 
-		if (!root || !mount_override)
+		if (!b->dummy_open_mount || !root || !mount_override)
 			return 0;
 		vfsi_state.mountpoint = strdup(mount_override);
 		rc = b->dummy_open_mount(root, mount_override, &vfsi_state.fs);
@@ -364,6 +328,7 @@ static int vfsi_open_for(const char *path)
 			vfsi_state.mountpoint = strdup(path);
 			return 1;
 		}
+		if (!b->nfs_open_mount_export) return 0;
 		if (!vfsi_find_mount(path, &mount)) {
 			if (!mount_override || !export_override)
 				return 0;
@@ -512,9 +477,11 @@ static int vfsi_cache_tree(const char *root)
 			.max_entries = 200000,
 			.max_path_bytes = 64 * 1024 * 1024,
 			.attributes = VFSI_ATTR_MODE | VFSI_ATTR_SIZE | VFSI_ATTR_NLINK |
-				VFSI_ATTR_FILEID | VFSI_ATTR_BLOCKS | VFSI_ATTR_UID |
-				VFSI_ATTR_GID | VFSI_ATTR_ATIME | VFSI_ATTR_MTIME | VFSI_ATTR_CTIME
+				VFSI_ATTR_FILEID | VFSI_ATTR_BLOCKS | VFSI_ATTR_MTIME
 		};
+		if (preserve_uid) options.attributes |= VFSI_ATTR_UID;
+		if (preserve_gid) options.attributes |= VFSI_ATTR_GID;
+		if (preserve_atimes) options.attributes |= VFSI_ATTR_ATIME;
 		struct vfsi_listing_result result = { 0 };
 		rc = vfsi_state.bindings.listdirs(vfsi_state.fs, &root, 1,
 			&options, vfsi_collect_indexed, &state, &result);
@@ -530,6 +497,8 @@ static int vfsi_cache_tree(const char *root)
 		return 0;
 	}
 	vfsi_state.active = 1;
+	if (getenv("VFSI_TRACE"))
+		fprintf(stderr, "vfsi: listdirs completed entries=%zu\n", vfsi_state.entries_nr);
 	if (getenv("VFSI_VERBOSE"))
 		rprintf(FINFO, "vfsi: cached %lu entries in %lu directories\n",
 			(unsigned long)vfsi_state.entries_nr,
@@ -563,7 +532,9 @@ int rsync_vfsi_listdir(const char *path, const char *const **names, size_t *coun
 
 static int vfsi_attrs_to_stat(const struct vfsi_attrs *attrs, STRUCT_STAT *st)
 {
-	if (attrs->ftype != VFSI_NF4REG && attrs->ftype != VFSI_NF4DIR)
+	if ((attrs->ftype != VFSI_NF4REG && attrs->ftype != VFSI_NF4DIR) ||
+	    attrs->size > INT64_MAX || attrs->blocks > INT64_MAX ||
+	    attrs->mtime_nsec >= 1000000000 || attrs->atime_nsec >= 1000000000)
 		return 0;
 	memset(st, 0, sizeof(*st));
 	st->st_ino = attrs->fileid;
@@ -577,6 +548,10 @@ static int vfsi_attrs_to_stat(const struct vfsi_attrs *attrs, STRUCT_STAT *st)
 	st->st_atime = attrs->atime_sec;
 	st->st_mtime = attrs->mtime_sec;
 	st->st_ctime = attrs->ctime_sec;
+	if ((uint64_t)st->st_size != attrs->size || (uint64_t)st->st_blocks != attrs->blocks ||
+	    (uint64_t)st->st_ino != attrs->fileid || (int64_t)st->st_mtime != attrs->mtime_sec ||
+	    (int64_t)st->st_atime != attrs->atime_sec)
+		return 0;
 #ifdef ST_ATIME_NSEC
 	st->ST_ATIME_NSEC = attrs->atime_nsec;
 #endif
@@ -600,25 +575,7 @@ int rsync_vfsi_stat(const char *path, STRUCT_STAT *st)
 
 void rsync_vfsi_reset(void)
 {
-	size_t i, j;
-
-	for (i = 0; i < vfsi_state.dirs_nr; i++) {
-		struct vfsi_dir *dir = vfsi_state.dirs[i];
-
-		for (j = 0; j < dir->nr; j++)
-			free(dir->names[j]);
-		free(dir->names);
-		free(dir->path);
-		free(dir);
-	}
-	for (i = 0; i < vfsi_state.entries_nr; i++) {
-		free(vfsi_state.entries[i]->path);
-		free(vfsi_state.entries[i]);
-	}
-	free(vfsi_state.dirs);
-	free(vfsi_state.entries);
-	free(vfsi_state.dirs_by_path.slots);
-	free(vfsi_state.entries_by_path.slots);
+	vfsi_clear_frontier();
 	if (vfsi_state.fs && vfsi_state.bindings.free)
 		vfsi_state.bindings.free(vfsi_state.fs);
 	free(vfsi_state.mountpoint);

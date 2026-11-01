@@ -39,6 +39,14 @@ if test ! -f "$source_dir/.rsync-vfsi-release"; then
 	mv "$tmp_source" "$source_dir"
 fi
 
+# New SDK archives own the common build/install recipe. Keep the legacy
+# branch while the pinned 0.3.9 archive predates that packaged tool.
+if test -f "$source_dir/build-sdk.py"; then
+    exec python3 "$source_dir/build-sdk.py" --registry-only \
+        --vnfs-version "$VNFS_VERSION" --target-dir "$target_dir" \
+        --prefix "$release_root/sdk"
+fi
+
 # Pre-1.0 patch requirements do not admit the next patch version. Retarget the
 # verified archive's build manifest before resolving the requested public crate.
 cargo add --manifest-path "$source_dir/Cargo.toml" "vnfs@=$VNFS_VERSION"
