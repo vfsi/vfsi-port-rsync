@@ -10,6 +10,11 @@
 #include "rsync-vfsi.h"
 #include <vfsi.h>
 #include <vfsi_dynamic.h>
+#if defined(__has_include)
+#if __has_include(<vfsi_posix.h>)
+#include <vfsi_posix.h>
+#endif
+#endif
 
 #if VFSI_ABI_VERSION != 3
 #error "rsync VFSI support requires VFSI C ABI v3"
@@ -234,7 +239,7 @@ static void vfsi_mount_clear(struct vfsi_mount *mount)
 	memset(mount, 0, sizeof(*mount));
 }
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(VFSI_MOUNT_INFO_VERSION)
 static void vfsi_unescape_mount_field(char *field)
 {
 	char *src = field;
@@ -254,9 +259,29 @@ static void vfsi_unescape_mount_field(char *field)
 }
 #endif
 
+#ifdef VFSI_MOUNT_INFO_VERSION
+static void collect_mount(const char *host, const char *export_root, const char *point, void *data)
+{
+    struct vfsi_mount *mount = data;
+    vfsi_mount_clear(mount);
+    mount->host = strdup(host);
+    mount->export_root = strdup(export_root);
+    mount->mountpoint = strdup(point);
+}
+#endif
+
 static int vfsi_find_mount(const char *path, struct vfsi_mount *result)
 {
-#ifdef __linux__
+#ifdef VFSI_MOUNT_INFO_VERSION
+    if (!vfsi_state.bindings.nfs_mount_info ||
+        vfsi_state.bindings.nfs_mount_info(path, collect_mount, result))
+        return 0;
+    if (!result->host || !result->export_root || !result->mountpoint) {
+        vfsi_mount_clear(result);
+        return 0;
+    }
+    return 1;
+#elif defined(__linux__)
 	FILE *fp;
 	char line[8192];
 	size_t best_len = 0;
@@ -532,6 +557,12 @@ int rsync_vfsi_listdir(const char *path, const char *const **names, size_t *coun
 
 static int vfsi_attrs_to_stat(const struct vfsi_attrs *attrs, STRUCT_STAT *st)
 {
+#if defined(VFSI_POSIX_FIELDS_VERSION) && !defined(USE_STAT64_FUNCS)
+    /* These modes still use kernel metadata for hard links and mount identity. */
+    if (!attrs || (attrs->ftype != VFSI_NF4REG && attrs->ftype != VFSI_NF4DIR))
+        return 0;
+    return vfsi_attrs_stat_fields(attrs, st) == 0;
+#else
 	if ((attrs->ftype != VFSI_NF4REG && attrs->ftype != VFSI_NF4DIR) ||
 	    attrs->size > INT64_MAX || attrs->blocks > INT64_MAX ||
 	    attrs->mtime_nsec >= 1000000000 || attrs->atime_nsec >= 1000000000)
@@ -559,6 +590,7 @@ static int vfsi_attrs_to_stat(const struct vfsi_attrs *attrs, STRUCT_STAT *st)
 	st->ST_MTIME_NSEC = attrs->mtime_nsec;
 #endif
 	return 1;
+#endif
 }
 
 int rsync_vfsi_stat(const char *path, STRUCT_STAT *st)
