@@ -29,3 +29,6 @@ VFSI_TRACE=1 VFSI_IMPL=dummy VFSI_LIBRARY="$fixture/missing.so" VFSI_ROOT="$fixt
     "$repo/rsync" -a --exclude=excluded/ "$fixture/source/" "$fixture/vector/" 2>"$fixture/trace"
 diff -r "$fixture/reference" "$fixture/vector"
 if grep -q 'vfsi: listdirs completed' "$fixture/trace"; then exit 1; fi
+
+# Cursor-aware builds additionally exercise the sender frontier and injected failures.
+python3 "$repo/support/test-vfsi-cohorts.py"

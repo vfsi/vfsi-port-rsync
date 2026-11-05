@@ -53,16 +53,23 @@ struct vfsi_map {
 	size_t used;
 };
 
+/* Child cursors are optional even when building against an older ABI-v3 SDK. */
+struct vfsi_dir_cursor;
 struct vfsi_dir {
 	char *path;
 	char **names;
-	size_t nr;
-	size_t alloc;
+	struct vfsi_entry **entries;
+	size_t nr, alloc;
+	struct vfsi_dir_cursor *cursor;
+	struct file_struct *file;
+	struct vfsi_dir *prev, *next;
+	int loaded;
 };
 
 struct vfsi_entry {
 	char *path;
 	struct vfsi_attrs attrs;
+	struct vfsi_dir_cursor *cursor;
 };
 
 static struct {
@@ -70,17 +77,16 @@ static struct {
 	int loader_state;
 	struct vfsi_fs *fs;
 	char *mountpoint;
-	struct vfsi_dir **dirs;
-	size_t dirs_nr;
-	size_t dirs_alloc;
-	struct vfsi_entry **entries;
-	size_t entries_nr;
-	size_t entries_alloc;
-	struct vfsi_map dirs_by_path;
+	struct vfsi_dir *dirs, *active;
+	struct hashtable *dirs_by_file;
 	struct vfsi_map entries_by_path;
-	int active;
+	size_t cached_entries, cached_path_bytes, dirs_nr;
 	int failed;
 } vfsi_state;
+
+#define VFSI_FRONTIER_DIRS 24
+#define VFSI_FRONTIER_ENTRIES 200000
+#define VFSI_FRONTIER_BYTES (64 * 1024 * 1024)
 
 static uint64_t vfsi_hash(const char *s)
 {
@@ -158,6 +164,19 @@ static void *vfsi_map_get(const struct vfsi_map *map, const char *key)
 	return NULL;
 }
 
+/* Reuse dense tables, but release oversized ones after sparse directories.
+ * This keeps reset work proportional to indexed entries, including empty dirs. */
+static void vfsi_map_clear(struct vfsi_map *map)
+{
+	if (map->size > 64 && map->used < map->size / 4) {
+		free(map->slots);
+		memset(map, 0, sizeof(*map));
+	} else if (map->used) {
+		memset(map->slots, 0, map->size * sizeof(struct vfsi_map_slot));
+		map->used = 0;
+	}
+}
+
 static int vfsi_absolute_path(const char *path, char *buf, size_t size)
 {
 	size_t len;
@@ -210,8 +229,13 @@ static int vfsi_load(void)
 		rprintf(FWARNING, "vfsi: cannot load %s: %s\n", library, dlerror());
 		goto fail;
 	}
-	if (vfsi_dynamic_load(&candidate, candidate.handle) ||
-	    !candidate.listdirs)
+	if (vfsi_dynamic_load(&candidate, candidate.handle))
+		goto fail;
+	if (!candidate.listdirs
+#ifdef VFSI_DIRECTORY_CURSORS_VERSION
+	 && !(candidate.listdirs_from_cursors && candidate.dir_cursor_free)
+#endif
+	)
 		goto fail;
 
 	vfsi_state.bindings = candidate;
@@ -388,171 +412,334 @@ static int vfsi_open_for(const char *path)
 	return 1;
 }
 
-static struct vfsi_dir *vfsi_add_dir(const char *path)
-{
-	struct vfsi_dir *dir = vfsi_map_get(&vfsi_state.dirs_by_path, path);
 
-	if (dir)
-		return dir;
-	dir = new0(struct vfsi_dir);
+static int vfsi_has_cursors(void)
+{
+#ifdef VFSI_DIRECTORY_CURSORS_VERSION
+	return vfsi_state.bindings.listdirs_from_cursors && vfsi_state.bindings.dir_cursor_free;
+#else
+	return 0;
+#endif
+}
+
+static void vfsi_free_cursor(struct vfsi_dir_cursor *cursor)
+{
+#ifdef VFSI_DIRECTORY_CURSORS_VERSION
+	if (cursor)
+		vfsi_state.bindings.dir_cursor_free(cursor);
+#else
+	(void)cursor;
+#endif
+}
+
+static struct vfsi_dir *vfsi_find_dir(struct file_struct *file)
+{
+	struct ht_int64_node *slot;
+	if (!file || !vfsi_state.dirs_by_file)
+		return NULL;
+	slot = hashtable_find(vfsi_state.dirs_by_file, (int64)(uintptr_t)file, NULL);
+	return slot ? slot->data : NULL;
+}
+
+static struct vfsi_dir *vfsi_add_dir(const char *path, struct file_struct *file)
+{
+	struct vfsi_dir *dir = new0(struct vfsi_dir);
 	dir->path = strdup(path);
-	if (vfsi_state.dirs_nr == vfsi_state.dirs_alloc) {
-		vfsi_state.dirs_alloc = vfsi_state.dirs_alloc
-			? vfsi_state.dirs_alloc * 2 : 64;
-		vfsi_state.dirs = realloc_array(vfsi_state.dirs,
-			struct vfsi_dir *, vfsi_state.dirs_alloc);
+	dir->file = file;
+	dir->next = vfsi_state.dirs;
+	if (dir->next)
+		dir->next->prev = dir;
+	vfsi_state.dirs = dir;
+	vfsi_state.dirs_nr++;
+	if (file) {
+		struct ht_int64_node *slot;
+		if (!vfsi_state.dirs_by_file)
+			vfsi_state.dirs_by_file = hashtable_create(64, 1);
+		slot = hashtable_find(vfsi_state.dirs_by_file, (int64)(uintptr_t)file, dir);
+		slot->data = dir;
 	}
-	vfsi_state.dirs[vfsi_state.dirs_nr++] = dir;
-	vfsi_map_put(&vfsi_state.dirs_by_path, dir->path, dir);
 	return dir;
 }
 
-static void vfsi_add_entry(const char *dir_path, const char *name,
-			   const struct vfsi_attrs *attrs)
+static void vfsi_discard_dir(struct vfsi_dir *dir)
 {
-	struct vfsi_dir *dir = vfsi_add_dir(dir_path);
-	struct vfsi_entry *entry;
-	size_t dlen = strlen(dir_path);
-	size_t nlen = strlen(name);
+	size_t i;
+	if (vfsi_state.active == dir) {
+		vfsi_state.active = NULL;
+		vfsi_map_clear(&vfsi_state.entries_by_path);
+	}
+	for (i = 0; i < dir->nr; i++) {
+		struct vfsi_entry *entry = dir->entries[i];
+		vfsi_state.cached_entries--;
+		vfsi_state.cached_path_bytes -= strlen(entry->path);
+		vfsi_free_cursor(entry->cursor);
+		free(entry->path);
+		free(entry);
+	}
+	vfsi_free_cursor(dir->cursor);
+	if (dir->file && vfsi_state.dirs_by_file) {
+		struct ht_int64_node *slot = hashtable_find(vfsi_state.dirs_by_file,
+			(int64)(uintptr_t)dir->file, NULL);
+		if (slot && slot->data == dir)
+			slot->data = NULL;
+	}
+	if (dir->prev)
+		dir->prev->next = dir->next;
+	else
+		vfsi_state.dirs = dir->next;
+	if (dir->next)
+		dir->next->prev = dir->prev;
+	free(dir->names);
+	free(dir->entries);
+	free(dir->path);
+	free(dir);
+	vfsi_state.dirs_nr--;
+	/* rsync's hash table retains keys whose data is cleared. Rebuild when
+	 * retired records dominate, so a long walk does not index the whole tree. */
+	if (vfsi_state.dirs_by_file && vfsi_state.dirs_by_file->entries > 64
+	 && (size_t)vfsi_state.dirs_by_file->entries / 2 > vfsi_state.dirs_nr) {
+		struct vfsi_dir *pending;
+		hashtable_destroy(vfsi_state.dirs_by_file);
+		vfsi_state.dirs_by_file = hashtable_create(64, 1);
+		for (pending = vfsi_state.dirs; pending; pending = pending->next) {
+			if (pending->file)
+				hashtable_find(vfsi_state.dirs_by_file, (int64)(uintptr_t)pending->file, pending);
+		}
+	}
+}
 
+struct vfsi_collect_state {
+	struct vfsi_dir **dirs;
+	size_t count;
+	int valid;
+};
+
+static bool vfsi_collect_row(size_t index, const char *path, const char *name,
+			 const struct vfsi_attrs *attrs, struct vfsi_dir_cursor *child, void *data)
+{
+	struct vfsi_collect_state *state = data;
+	struct vfsi_dir *dir;
+	struct vfsi_entry *entry;
+	size_t dlen, nlen, plen;
+	if (!name || !*name || !strcmp(name, ".") || !strcmp(name, "..")) {
+		vfsi_free_cursor(child);
+		return true;
+	}
+	if (index >= state->count || !path || strcmp(path, state->dirs[index]->path)
+	 || strchr(name, '/') || !attrs || attrs->abi_version != VFSI_ABI_VERSION
+	 || attrs->struct_size < sizeof(*attrs) || (child && attrs->ftype != VFSI_NF4DIR))
+		goto invalid;
+	dir = state->dirs[index];
+	dlen = strlen(path);
+	nlen = strlen(name);
+	if (dlen >= MAXPATHLEN || nlen >= MAXPATHLEN - dlen - 1)
+		goto invalid;
+	plen = dlen + (dlen == 1 ? 0 : 1) + nlen;
+	if (vfsi_state.cached_entries >= VFSI_FRONTIER_ENTRIES
+	 || plen > VFSI_FRONTIER_BYTES - vfsi_state.cached_path_bytes)
+		goto invalid;
 	if (dir->nr == dir->alloc) {
 		dir->alloc = dir->alloc ? dir->alloc * 2 : 32;
 		dir->names = realloc_array(dir->names, char *, dir->alloc);
+		dir->entries = realloc_array(dir->entries, struct vfsi_entry *, dir->alloc);
 	}
-	dir->names[dir->nr++] = strdup(name);
-
 	entry = new(struct vfsi_entry);
-	entry->path = new_array(char, dlen + (dlen == 1 ? 0 : 1) + nlen + 1);
-	memcpy(entry->path, dir_path, dlen);
+	entry->path = new_array(char, plen + 1);
+	memcpy(entry->path, path, dlen);
 	if (dlen != 1)
 		entry->path[dlen++] = '/';
 	memcpy(entry->path + dlen, name, nlen + 1);
 	entry->attrs = *attrs;
-	if (vfsi_state.entries_nr == vfsi_state.entries_alloc) {
-		vfsi_state.entries_alloc = vfsi_state.entries_alloc
-			? vfsi_state.entries_alloc * 2 : 256;
-		vfsi_state.entries = realloc_array(vfsi_state.entries,
-			struct vfsi_entry *, vfsi_state.entries_alloc);
-	}
-	vfsi_state.entries[vfsi_state.entries_nr++] = entry;
-	vfsi_map_put(&vfsi_state.entries_by_path, entry->path, entry);
-        /* Child directories remain undiscovered until rsync's filters and
-         * incremental recursion choose to enter them. */
-}
-
-struct vfsi_collect_state {
-	int valid;
-};
-
-static bool vfsi_collect(const char *dir, const char *name,
-			 const struct vfsi_attrs *attrs, void *data)
-{
-	struct vfsi_collect_state *state = data;
-
-	if (!name || !*name || !strcmp(name, ".") || !strcmp(name, ".."))
-		return true;
-	if (!dir || !attrs || attrs->abi_version != VFSI_ABI_VERSION
-	 || attrs->struct_size < sizeof(*attrs)) {
-		state->valid = 0;
-		return false;
-	}
-	vfsi_add_entry(dir, name, attrs);
+	entry->cursor = child;
+	dir->names[dir->nr] = entry->path + dlen;
+	dir->entries[dir->nr++] = entry;
+	vfsi_state.cached_entries++;
+	vfsi_state.cached_path_bytes += plen;
 	return true;
+invalid:
+	vfsi_free_cursor(child);
+	state->valid = 0;
+	return false;
 }
 
 static bool vfsi_collect_indexed(size_t index, const char *dir, const char *name,
-			const struct vfsi_attrs *attrs, void *data)
+			 const struct vfsi_attrs *attrs, void *data)
 {
-	(void)index;
-	return vfsi_collect(dir, name, attrs, data);
+	return vfsi_collect_row(index, dir, name, attrs, NULL, data);
 }
 
-/* A frontier cache, not a subtree snapshot. Once rsync enters another
- * directory it has copied the previous names/attrs into its own file list. */
-static void vfsi_clear_frontier(void)
+#ifdef VFSI_DIRECTORY_CURSORS_VERSION
+static bool vfsi_collect_cursor(size_t index, const char *dir, const char *name,
+		const struct vfsi_attrs *attrs, struct vfsi_dir_cursor *child, void *data)
 {
-	size_t i,j;
-	for (i=0;i<vfsi_state.dirs_nr;i++) {
-		struct vfsi_dir *dir=vfsi_state.dirs[i];
-		for(j=0;j<dir->nr;j++) free(dir->names[j]);
-		free(dir->names); free(dir->path); free(dir);
-	}
-	for(i=0;i<vfsi_state.entries_nr;i++) { free(vfsi_state.entries[i]->path); free(vfsi_state.entries[i]); }
-	free(vfsi_state.dirs); free(vfsi_state.entries);
-	free(vfsi_state.dirs_by_path.slots); free(vfsi_state.entries_by_path.slots);
-	vfsi_state.dirs=NULL; vfsi_state.entries=NULL;
-	vfsi_state.dirs_nr=vfsi_state.dirs_alloc=vfsi_state.entries_nr=vfsi_state.entries_alloc=0;
-	memset(&vfsi_state.dirs_by_path,0,sizeof(vfsi_state.dirs_by_path));
-	memset(&vfsi_state.entries_by_path,0,sizeof(vfsi_state.entries_by_path));
+	return vfsi_collect_row(index, dir, name, attrs, child, data);
 }
+#endif
 
-static int vfsi_cache_tree(const char *root)
+/* Publish only complete bounded cohorts. Pending sibling listings survive a
+ * descent into another subtree; accepted child cursors outlive entry caches. */
+static int vfsi_cache_dirs(struct vfsi_dir **dirs, size_t count)
 {
-	struct vfsi_collect_state state = { 1 };
+	struct vfsi_collect_state state = { dirs, count, 1 };
+	const char *paths[VFSI_FRONTIER_DIRS];
+	struct vfsi_listing_result results[VFSI_FRONTIER_DIRS] = {{ 0 }};
+	struct vfsi_listing_options options = {
+		.max_entries = VFSI_FRONTIER_ENTRIES - vfsi_state.cached_entries,
+		.max_path_bytes = VFSI_FRONTIER_BYTES - vfsi_state.cached_path_bytes,
+		.attributes = VFSI_ATTR_MODE | VFSI_ATTR_SIZE | VFSI_ATTR_NLINK |
+			VFSI_ATTR_FILEID | VFSI_ATTR_BLOCKS | VFSI_ATTR_MTIME
+	};
+	size_t i, entries = 0, retained = 0;
 	int rc;
-
-	if (!vfsi_open_for(root)) {
-		vfsi_state.failed = 1;
-		return 0;
-	}
-	vfsi_clear_frontier();
-	vfsi_add_dir(root);
-	{
-		struct vfsi_listing_options options = {
-			.max_entries = 200000,
-			.max_path_bytes = 64 * 1024 * 1024,
-			.attributes = VFSI_ATTR_MODE | VFSI_ATTR_SIZE | VFSI_ATTR_NLINK |
-				VFSI_ATTR_FILEID | VFSI_ATTR_BLOCKS | VFSI_ATTR_MTIME
-		};
-		if (preserve_uid) options.attributes |= VFSI_ATTR_UID;
-		if (preserve_gid) options.attributes |= VFSI_ATTR_GID;
-		if (preserve_atimes) options.attributes |= VFSI_ATTR_ATIME;
-		struct vfsi_listing_result result = { 0 };
-		rc = vfsi_state.bindings.listdirs(vfsi_state.fs, &root, 1,
-			&options, vfsi_collect_indexed, &state, &result);
-		if (!rc && result.completion != 1)
+	if (preserve_uid) options.attributes |= VFSI_ATTR_UID;
+	if (preserve_gid) options.attributes |= VFSI_ATTR_GID;
+	if (preserve_atimes) options.attributes |= VFSI_ATTR_ATIME;
+	for (i = 0; i < count; i++)
+		paths[i] = dirs[i]->path;
+#ifdef VFSI_DIRECTORY_CURSORS_VERSION
+	if (vfsi_has_cursors()) {
+		struct vfsi_dir_cursor *cursors[VFSI_FRONTIER_DIRS];
+		for (i = 0; i < count; i++) {
+			cursors[i] = dirs[i]->cursor;
+			dirs[i]->cursor = NULL; /* the call array now owns the seed */
+			retained += cursors[i] != NULL;
+		}
+		rc = vfsi_state.bindings.listdirs_from_cursors(vfsi_state.fs, paths,
+			cursors, count, &options, vfsi_collect_cursor, &state, results);
+		for (i = 0; i < count; i++)
+			dirs[i]->cursor = cursors[i];
+	} else
+#endif
+		rc = vfsi_state.bindings.listdirs(vfsi_state.fs, paths, count,
+			&options, vfsi_collect_indexed, &state, results);
+	for (i = 0; i < count && !rc; i++) {
+		if (results[i].completion != 1 || results[i].delivered != dirs[i]->nr)
 			rc = EIO;
+		entries += dirs[i]->nr;
 	}
 	if (rc || !state.valid) {
-		rprintf(FWARNING, "vfsi: directory listing failed for %s: %d; using POSIX scan\n",
-			root, rc);
-		/* Never mix a partial vector snapshot with a POSIX traversal. */
+		rprintf(FWARNING, "vfsi: directory cohort failed: %d; using POSIX scan\n", rc ? rc : EIO);
 		rsync_vfsi_reset();
 		vfsi_state.failed = 1;
 		return 0;
 	}
-	vfsi_state.active = 1;
+	for (i = 0; i < count; i++)
+		dirs[i]->loaded = 1;
 	if (getenv("VFSI_TRACE"))
-		fprintf(stderr, "vfsi: listdirs completed entries=%zu\n", vfsi_state.entries_nr);
+		fprintf(stderr, "vfsi: listdirs completed mode=%s dirs=%zu cursors=%zu entries=%zu\n",
+			vfsi_has_cursors() ? "cohort" : "paths", count, retained, entries);
 	if (getenv("VFSI_VERBOSE"))
 		rprintf(FINFO, "vfsi: cached %lu entries in %lu directories\n",
-			(unsigned long)vfsi_state.entries_nr,
-			(unsigned long)vfsi_state.dirs_nr);
+			(unsigned long)entries, (unsigned long)count);
 	return 1;
 }
 
-int rsync_vfsi_listdir(const char *path, const char *const **names, size_t *count)
+int rsync_vfsi_listdir(const char *path, struct file_struct *file,
+		      const char *const **names, size_t *count)
 {
 	char absolute[MAXPATHLEN];
 	struct vfsi_dir *dir;
-
+	size_t i;
 	if (vfsi_state.failed || !vfsi_eligible()
 	 || !vfsi_absolute_path(path, absolute, sizeof absolute))
 		return 0;
-	dir = vfsi_map_get(&vfsi_state.dirs_by_path, absolute);
-	if (!dir) {
-		/* A command can have multiple disjoint source roots. Empty
-		 * directories are pre-created by the first recursive listing, so a
-		 * miss here means this is a genuinely new root. */
-		if (!vfsi_cache_tree(absolute))
-			return 0;
-		dir = vfsi_map_get(&vfsi_state.dirs_by_path, absolute);
+	if (vfsi_state.active)
+		rsync_vfsi_listdir_done();
+	dir = vfsi_find_dir(file);
+	if (dir && strcmp(dir->path, absolute)) {
+		vfsi_discard_dir(dir);
+		dir = NULL;
 	}
-	if (!dir)
+	if (!dir) {
+		if (!vfsi_open_for(absolute)) {
+			vfsi_state.failed = 1;
+			return 0;
+		}
+		dir = vfsi_add_dir(absolute, file);
+	}
+	if (!dir->loaded && !vfsi_cache_dirs(&dir, 1))
 		return 0;
+	vfsi_state.active = dir;
+	for (i = 0; i < dir->nr; i++)
+		vfsi_map_put(&vfsi_state.entries_by_path, dir->entries[i]->path, dir->entries[i]);
 	*names = (const char *const *)dir->names;
 	*count = dir->nr;
 	return 1;
+}
+
+void rsync_vfsi_listdir_done(void)
+{
+	if (vfsi_state.active)
+		vfsi_discard_dir(vfsi_state.active);
+}
+
+/* Called only after send_file_name() has admitted the directory through its
+ * normal filters. Excluded seeds remain in the active listing and are freed. */
+void rsync_vfsi_remember_dir(struct file_struct *file, const char *path)
+{
+	char absolute[MAXPATHLEN];
+	struct vfsi_entry *entry;
+	struct vfsi_dir *dir;
+	if (!vfsi_has_cursors() || !file || !S_ISDIR(file->mode) || !vfsi_state.active
+	 || vfsi_find_dir(file) || !vfsi_absolute_path(path, absolute, sizeof absolute))
+		return;
+	entry = vfsi_map_get(&vfsi_state.entries_by_path, absolute);
+	if (!entry || !entry->cursor)
+		return;
+	dir = vfsi_add_dir(absolute, file);
+	dir->cursor = entry->cursor;
+	entry->cursor = NULL;
+}
+
+void rsync_vfsi_prepare_dirs(struct file_struct *const *files, size_t count)
+{
+	struct vfsi_dir *dirs[VFSI_FRONTIER_DIRS], *first;
+	size_t i, nr = 0;
+	if (!count || vfsi_state.failed || !vfsi_has_cursors() || !vfsi_state.fs)
+		return;
+	first = vfsi_find_dir(files[0]);
+	if (!first || first->loaded)
+		return;
+	/* Keep a reserve for the directory rsync is about to consume. Cold sibling
+	 * snapshots share one global quota, rather than multiplying by tree depth. */
+	if (vfsi_state.cached_entries >= VFSI_FRONTIER_ENTRIES / 2
+	 || vfsi_state.cached_path_bytes >= VFSI_FRONTIER_BYTES / 2)
+		return;
+	for (i = 0; i < count && i < 256 && nr < VFSI_FRONTIER_DIRS; i++) {
+		struct vfsi_dir *dir;
+		if (!S_ISDIR(files[i]->mode) || files[i]->flags & FLAG_MOUNT_DIR)
+			continue;
+		dir = vfsi_find_dir(files[i]);
+		if (dir && !dir->loaded) {
+			size_t j;
+			for (j = 0; j < nr && dirs[j] != dir; j++) {}
+			if (j == nr)
+				dirs[nr++] = dir;
+		}
+	}
+	if (nr)
+		vfsi_cache_dirs(dirs, nr);
+}
+
+/* Skip look-ahead entirely for inactive/legacy scans and already loaded cohorts.
+ * Bound inspected links as well as admitted operands for sparse sender frontiers. */
+void rsync_vfsi_prepare_siblings(struct file_struct *const *files, int next)
+{
+	struct file_struct *cohort[VFSI_FRONTIER_DIRS];
+	struct vfsi_dir *first;
+	size_t nr = 0, inspected = 0;
+	if (next < 0 || vfsi_state.failed || !vfsi_has_cursors() || !vfsi_state.fs)
+		return;
+	first = vfsi_find_dir(files[next]);
+	if (!first || first->loaded)
+		return;
+	while (next >= 0 && nr < VFSI_FRONTIER_DIRS && inspected++ < 256) {
+		struct file_struct *candidate = files[next];
+		if (candidate->flags & FLAG_CONTENT_DIR)
+			cohort[nr++] = candidate;
+		next = DIR_NEXT_SIBLING(F_DIR_NODE_P(candidate));
+	}
+	rsync_vfsi_prepare_dirs(cohort, nr);
 }
 
 static int vfsi_attrs_to_stat(const struct vfsi_attrs *attrs, STRUCT_STAT *st)
@@ -593,13 +780,12 @@ static int vfsi_attrs_to_stat(const struct vfsi_attrs *attrs, STRUCT_STAT *st)
 #endif
 }
 
+
 int rsync_vfsi_stat(const char *path, STRUCT_STAT *st)
 {
 	char absolute[MAXPATHLEN];
 	struct vfsi_entry *entry;
-
-	if (!vfsi_state.active
-	 || !vfsi_absolute_path(path, absolute, sizeof absolute))
+	if (!vfsi_state.active || !vfsi_absolute_path(path, absolute, sizeof absolute))
 		return 0;
 	entry = vfsi_map_get(&vfsi_state.entries_by_path, absolute);
 	return entry ? vfsi_attrs_to_stat(&entry->attrs, st) : 0;
@@ -607,18 +793,17 @@ int rsync_vfsi_stat(const char *path, STRUCT_STAT *st)
 
 void rsync_vfsi_reset(void)
 {
-	vfsi_clear_frontier();
+	if (vfsi_state.dirs_by_file)
+		hashtable_destroy(vfsi_state.dirs_by_file);
+	vfsi_state.dirs_by_file = NULL;
+	while (vfsi_state.dirs)
+		vfsi_discard_dir(vfsi_state.dirs);
+	free(vfsi_state.entries_by_path.slots);
+	memset(&vfsi_state.entries_by_path, 0, sizeof(vfsi_state.entries_by_path));
 	if (vfsi_state.fs && vfsi_state.bindings.free)
 		vfsi_state.bindings.free(vfsi_state.fs);
 	free(vfsi_state.mountpoint);
 	vfsi_state.fs = NULL;
 	vfsi_state.mountpoint = NULL;
-	vfsi_state.dirs = NULL;
-	vfsi_state.entries = NULL;
-	vfsi_state.dirs_nr = vfsi_state.dirs_alloc = 0;
-	vfsi_state.entries_nr = vfsi_state.entries_alloc = 0;
-	memset(&vfsi_state.dirs_by_path, 0, sizeof(vfsi_state.dirs_by_path));
-	memset(&vfsi_state.entries_by_path, 0, sizeof(vfsi_state.entries_by_path));
-	vfsi_state.active = 0;
 	vfsi_state.failed = 0;
 }
