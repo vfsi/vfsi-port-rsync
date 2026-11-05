@@ -24,7 +24,11 @@
 #ifdef SUPPORT_VFSI
 #include "rsync-vfsi.h"
 #else
-#define rsync_vfsi_listdir(path, names, count) 0
+#define rsync_vfsi_listdir(path, file, names, count) ((void)(file), 0)
+#define rsync_vfsi_remember_dir(file, path) ((void)0)
+#define rsync_vfsi_prepare_dirs(files, count) ((void)0)
+#define rsync_vfsi_prepare_siblings(files, next) ((void)0)
+#define rsync_vfsi_listdir_done() ((void)0)
 #define rsync_vfsi_stat(path, st) 0
 #define rsync_vfsi_reset() ((void)0)
 #endif
@@ -597,7 +601,7 @@ static inline int is_excluded(const char *fname, int is_dir, int filter_level)
 }
 
 static void send_directory(int f, struct file_list *flist,
-			   char *fbuf, int len, int flags);
+			   char *fbuf, int len, int flags, struct file_struct *directory);
 
 static const char *pathname;
 const char *orig_dir;
@@ -2127,7 +2131,7 @@ static void send_if_directory(int f, struct file_list *flist,
 		if (len > 1 && fbuf[len-1] == '/')
 			fbuf[--len] = '\0';
 		save_filters = push_local_filters(fbuf, len);
-		send_directory(f, flist, fbuf, len, flags);
+		send_directory(f, flist, fbuf, len, flags, file);
 		pop_local_filters(save_filters);
 		fbuf[ol] = '\0';
 		if (is_dot_dir)
@@ -2349,7 +2353,7 @@ static DIR *secure_opendir(const char *fbuf)
  * might call this with f set to -2, which also indicates that local filter
  * rules should be ignored. */
 static void send_directory(int f, struct file_list *flist, char *fbuf, int len,
-			   int flags)
+			   int flags, struct file_struct *directory)
 {
 	struct dirent *di;
 	const char *const *vfsi_names = NULL;
@@ -2364,7 +2368,7 @@ static void send_directory(int f, struct file_list *flist, char *fbuf, int len,
 
 	assert(flist != NULL);
 	using_vfsi = f >= 0
-		  && rsync_vfsi_listdir(fbuf, &vfsi_names, &vfsi_count);
+		  && rsync_vfsi_listdir(fbuf, directory, &vfsi_names, &vfsi_count);
 
 #if defined HAVE_FDOPENDIR && defined HAVE_DIRFD
 	/* Confine the enumeration beneath the transfer root.  secure_opendir()
@@ -2460,7 +2464,11 @@ static void send_directory(int f, struct file_list *flist, char *fbuf, int len,
 			continue;
 		}
 
-		send_file_name(f, flist, fbuf, NULL, flags, filter_level);
+		{
+			struct file_struct *file = send_file_name(f, flist, fbuf, NULL, flags, filter_level);
+			if (using_vfsi && file && S_ISDIR(file->mode))
+				rsync_vfsi_remember_dir(file, fbuf);
+		}
 	}
 
 	scan_dirfd = -1;	/* fbuf is about to be reused / d closed */
@@ -2476,11 +2484,17 @@ static void send_directory(int f, struct file_list *flist, char *fbuf, int len,
 	if (!using_vfsi)
 		closedir(d);
 
+	if (using_vfsi)
+		rsync_vfsi_listdir_done();
+
 	if (f >= 0 && recurse && !divert_dirs) {
 		int i, end = flist->used - 1;
 		/* send_if_directory() bumps flist->used, so use "end". */
-		for (i = start; i <= end; i++)
+		for (i = start; i <= end; i++) {
+			if (S_ISDIR(flist->files[i]->mode))
+				rsync_vfsi_prepare_dirs(flist->files + i, end - i + 1);
 			send_if_directory(f, flist, flist->files[i], fbuf, len, flags);
+		}
 	}
 }
 
@@ -2622,7 +2636,7 @@ static void send1extra(int f, struct file_struct *file, struct file_list *flist)
 			}
 			filesystem_dev = st.st_dev;
 		}
-		send_directory(f, flist, fbuf, dlen, flags);
+		send_directory(f, flist, fbuf, dlen, flags, file);
 	}
 
 	if (!relative_paths)
@@ -2707,6 +2721,7 @@ void send_extra_file_list(int f, int at_least)
 		write_ndx(f, NDX_FLIST_OFFSET - dir_ndx);
 		flist->parent_ndx = send_dir_ndx; /* the sending side must remember the sorted ndx value */
 
+		rsync_vfsi_prepare_siblings(dir_flist->sorted, send_dir_ndx);
 		send1extra(f, file, flist);
 		prev_flags = file->flags;
 		dp = F_DIR_NODE_P(file);
@@ -3050,7 +3065,7 @@ struct file_list *send_file_list(int f, int argc, char *argv[])
 						send_dir_depth = 0;
 						change_local_filter_dir(fbuf, len, send_dir_depth);
 					}
-					send_directory(f, flist, fbuf, len, flags);
+					send_directory(f, flist, fbuf, len, flags, file);
 				}
 			} else
 				send_if_directory(f, flist, file, fbuf, len, flags);
@@ -4035,7 +4050,7 @@ struct file_list *get_dirlist(char *dirname, int dlen, int flags)
 
 	recurse = 0;
 	xfer_dirs = 1;
-	send_directory(senddir_fd, dirlist, dirname, dlen, senddir_flags);
+	send_directory(senddir_fd, dirlist, dirname, dlen, senddir_flags, NULL);
 	xfer_dirs = save_xfer_dirs;
 	recurse = save_recurse;
 	if (INFO_GTE(PROGRESS, 1))
