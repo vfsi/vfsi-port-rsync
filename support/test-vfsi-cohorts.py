@@ -197,22 +197,6 @@ class Cohorts(unittest.TestCase):
                 self.assertNotIn("using POSIX scan", result.stderr)
                 self.assertTrue(all(line.split("\t")[1] == "0" for line in (root / "calls").read_text().splitlines() if line.startswith("FREE\t")))
 
-    def test_stat_timestamp_projection_preserves_seconds_and_nanoseconds(self):
-        with tempfile.TemporaryDirectory(prefix="rsync-cohort-times-") as temp:
-            root = Path(temp)
-            helper = root / "attributes"
-            subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
-                            "-I" + str(sdk_include()), "-DVFSI_TEST_ATTRIBUTES",
-                            str(REPO / "support/vfsi-cohort-mock.c"), "-o", str(helper)], check=True)
-            path = root / "input"
-            path.write_bytes(b"x")
-            os.utime(path, ns=(1_600_000_000_123_456_789, 1_600_000_001_987_654_321))
-            st = path.stat()
-            expected = [value for ns in [st.st_atime_ns, st.st_mtime_ns, st.st_ctime_ns]
-                        for value in divmod(ns, 1_000_000_000)]
-            result = subprocess.run([str(helper), str(path)], capture_output=True, text=True, check=True)
-            self.assertEqual(list(map(int, result.stdout.split())), expected)
-
     @unittest.skipUnless(sys.platform.startswith("linux"), "requires ELF memset interposition")
     def test_wide_frontier_does_not_repeatedly_clear_a_large_path_index(self):
         if b"__asan_init" in BINARY.read_bytes():
@@ -287,6 +271,28 @@ __attribute__((destructor)) static void finish(void) {
                 self.assertEqual(vector.stdout, ordinary.stdout)
                 self.assertIn("mode=cohort", vector.stderr)
 
+
+class StatProjection(unittest.TestCase):
+    def test_stat_timestamp_projection_preserves_seconds_and_nanoseconds(self):
+        include = sdk_include()
+        if not include or not (include / "vfsi.h").exists():
+            self.skipTest("set VFSI_INCLUDE to an ABI-v3 SDK header directory")
+        with tempfile.TemporaryDirectory(prefix="rsync-cohort-times-") as temp:
+            root = Path(temp)
+            helper = root / "attributes"
+            path = root / "input"
+            path.write_bytes(b"x")
+            os.utime(path, ns=(1_600_000_000_123_456_789, 1_600_000_001_987_654_321))
+            st = path.stat()
+            expected = [value for ns in [st.st_atime_ns, st.st_mtime_ns, st.st_ctime_ns]
+                        for value in divmod(ns, 1_000_000_000)]
+            for features in [[], ["-D_POSIX_C_SOURCE=200809L"]]:
+                with self.subTest(features=features):
+                    subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                                    "-I" + str(include), *features, "-DVFSI_TEST_ATTRIBUTES",
+                                    str(REPO / "support/vfsi-cohort-mock.c"), "-o", str(helper)], check=True)
+                    result = subprocess.run([str(helper), str(path)], capture_output=True, text=True, check=True)
+                    self.assertEqual(list(map(int, result.stdout.split())), expected)
 
 if __name__ == "__main__":
     unittest.main()
