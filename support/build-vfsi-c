@@ -2,6 +2,25 @@
 
 set -eu
 
+headers_only=0
+case "$#" in
+    0) ;;
+    1) if test "$1" = --headers-only; then headers_only=1; else
+           echo "usage: support/build-vfsi-c [--headers-only]" >&2; exit 2
+       fi ;;
+    *) echo "usage: support/build-vfsi-c [--headers-only]" >&2; exit 2 ;;
+esac
+
+report_headers() {
+    test -f "$source_dir/include/vfsi.h" || {
+        echo "support/build-vfsi-c: missing vfsi.h in $source_dir/include" >&2; exit 1;
+    }
+    printf 'VFSI C header: %s/include/vfsi.h\n' "$source_dir"
+    if test -n "${GITHUB_OUTPUT:-}"; then
+        printf 'include=%s/include\n' "$source_dir" >>"$GITHUB_OUTPUT"
+    fi
+}
+
 VFSI_C_VERSION=0.3.12
 VNFS_VERSION=0.0.28
 VFSI_C_SHA256=3528d76bd13d10174bc489ccacf26d7dcc179a847e2455497e161e3a9db21d42
@@ -13,19 +32,24 @@ archive="$release_root/vfsi-c-$VFSI_C_VERSION.crate"
 source_dir="$release_root/source"
 target_dir="$release_root/target"
 
-for tool in cargo curl python3 sha256sum tar; do
-	if ! command -v "$tool" >/dev/null 2>&1; then
-		echo "support/build-vfsi-c: required tool not found: $tool" >&2
-		exit 1
-	fi
-done
-
 # Explicit local development SDK; default builds still verify the released archive.
 if test -n "${VFSI_SDK_SOURCE:-}"; then
+    if test "$headers_only" = 1; then
+        source_dir=$VFSI_SDK_SOURCE
+        report_headers
+        exit 0
+    fi
     exec python3 "$VFSI_SDK_SOURCE/build-sdk.py" \
         --profile "${VFSI_SDK_PROFILE:-release}" --target-dir "${VFSI_SDK_TARGET:-$target_dir}" \
         --prefix "$release_root/sdk-dev"
 fi
+
+for tool in curl python3 tar; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "support/build-vfsi-c: required tool not found: $tool" >&2
+        exit 1
+    fi
+done
 
 mkdir -p "$release_root"
 if test ! -f "$archive"; then
@@ -33,7 +57,20 @@ if test ! -f "$archive"; then
 		"https://crates.io/api/v1/crates/vfsi-c/$VFSI_C_VERSION/download" \
 		-o "$archive"
 fi
-printf '%s  %s\n' "$VFSI_C_SHA256" "$archive" | sha256sum -c -
+python3 - "$archive" "$VFSI_C_SHA256" <<'PY_CHECKSUM'
+import hashlib
+from pathlib import Path
+import sys
+
+archive = Path(sys.argv[1])
+digest = hashlib.sha256()
+with archive.open("rb") as source:
+    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        digest.update(chunk)
+if digest.hexdigest() != sys.argv[2]:
+    raise SystemExit(f"checksum mismatch: {archive}")
+print(f"{archive}: OK")
+PY_CHECKSUM
 
 if test ! -f "$source_dir/.rsync-vfsi-release"; then
 	tmp_source="$release_root/source.tmp"
@@ -44,6 +81,16 @@ if test ! -f "$source_dir/.rsync-vfsi-release"; then
 		>"$tmp_source/.rsync-vfsi-release"
 	rm -rf "$source_dir"
 	mv "$tmp_source" "$source_dir"
+fi
+
+if test "$headers_only" = 1; then
+    report_headers
+    exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "support/build-vfsi-c: required tool not found: cargo" >&2
+    exit 1
 fi
 
 if test -f "$source_dir/build-sdk.py"; then

@@ -11,6 +11,49 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static void attributes(struct vfsi_attrs *a, const struct stat *s)
+{
+#if defined(__APPLE__) && (!defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE))
+    const struct timespec *atime = &s->st_atimespec;
+    const struct timespec *mtime = &s->st_mtimespec;
+    const struct timespec *ctime = &s->st_ctimespec;
+#elif !defined(__APPLE__)
+    const struct timespec *atime = &s->st_atim;
+    const struct timespec *mtime = &s->st_mtim;
+    const struct timespec *ctime = &s->st_ctim;
+#endif
+    memset(a,0,sizeof(*a)); a->abi_version=VFSI_ABI_VERSION; a->struct_size=sizeof(*a);
+    a->ftype=S_ISDIR(s->st_mode) ? 2 : S_ISREG(s->st_mode) ? 1 : S_ISLNK(s->st_mode) ? 5 : 0;
+    a->mode=s->st_mode & 07777; a->size=s->st_size; a->nlink=s->st_nlink;
+    a->fileid=s->st_ino; a->blocks=s->st_blocks; a->uid=s->st_uid; a->gid=s->st_gid;
+#if defined(__APPLE__) && defined(_POSIX_C_SOURCE) && !defined(_DARWIN_C_SOURCE)
+    a->atime_sec=s->st_atime; a->atime_nsec=s->st_atimensec;
+    a->mtime_sec=s->st_mtime; a->mtime_nsec=s->st_mtimensec;
+    a->ctime_sec=s->st_ctime; a->ctime_nsec=s->st_ctimensec;
+#else
+    a->atime_sec=atime->tv_sec; a->atime_nsec=atime->tv_nsec;
+    a->mtime_sec=mtime->tv_sec; a->mtime_nsec=mtime->tv_nsec;
+    a->ctime_sec=ctime->tv_sec; a->ctime_nsec=ctime->tv_nsec;
+#endif
+}
+
+#ifdef VFSI_TEST_ATTRIBUTES
+/* Standalone projection test; the Python driver compares native stat values. */
+int main(int argc, char **argv)
+{
+    struct stat st;
+    struct vfsi_attrs attrs;
+    if (argc != 2 || stat(argv[1], &st))
+        return 1;
+    attributes(&attrs, &st);
+    printf("%lld %u %lld %u %lld %u\n",
+        (long long)attrs.atime_sec, attrs.atime_nsec,
+        (long long)attrs.mtime_sec, attrs.mtime_nsec,
+        (long long)attrs.ctime_sec, attrs.ctime_nsec);
+    return 0;
+}
+
+#else
 struct vfsi_fs { unsigned calls; };
 struct vfsi_dir_cursor { int fd; char *path; struct vfsi_fs *owner; };
 struct row { size_t index; char *name; struct vfsi_attrs attrs; struct vfsi_dir_cursor *child; };
@@ -42,25 +85,6 @@ int vfsi_dummy_open_mount(const char *root, const char *mountpoint, struct vfsi_
 void vfsi_free(struct vfsi_fs *fs)
 {
     event("FREE",NULL,live,0); assert(live == 0); free(fs);
-}
-static void attributes(struct vfsi_attrs *a, const struct stat *s)
-{
-#if defined(__APPLE__)
-    const struct timespec *atime = &s->st_atimespec;
-    const struct timespec *mtime = &s->st_mtimespec;
-    const struct timespec *ctime = &s->st_ctimespec;
-#else
-    const struct timespec *atime = &s->st_atim;
-    const struct timespec *mtime = &s->st_mtim;
-    const struct timespec *ctime = &s->st_ctim;
-#endif
-    memset(a,0,sizeof(*a)); a->abi_version=VFSI_ABI_VERSION; a->struct_size=sizeof(*a);
-    a->ftype=S_ISDIR(s->st_mode) ? 2 : S_ISREG(s->st_mode) ? 1 : S_ISLNK(s->st_mode) ? 5 : 0;
-    a->mode=s->st_mode & 07777; a->size=s->st_size; a->nlink=s->st_nlink;
-    a->fileid=s->st_ino; a->blocks=s->st_blocks; a->uid=s->st_uid; a->gid=s->st_gid;
-    a->atime_sec=atime->tv_sec; a->atime_nsec=atime->tv_nsec;
-    a->mtime_sec=mtime->tv_sec; a->mtime_nsec=mtime->tv_nsec;
-    a->ctime_sec=ctime->tv_sec; a->ctime_nsec=ctime->tv_nsec;
 }
 static int listing(struct vfsi_fs *fs, const char *const *paths,
     struct vfsi_dir_cursor **input, size_t count, const struct vfsi_listing_options *opts,
@@ -156,19 +180,4 @@ int vfsi_listdirs(struct vfsi_fs *fs, const char *const *dirs, size_t count,
 
 #endif /* VFSI_TEST_NO_LEGACY */
 
-#ifdef VFSI_TEST_ATTRIBUTES
-/* Standalone projection test; the Python driver compares native stat values. */
-int main(int argc, char **argv)
-{
-    struct stat st;
-    struct vfsi_attrs attrs;
-    if (argc != 2 || stat(argv[1], &st))
-        return 1;
-    attributes(&attrs, &st);
-    printf("%lld %u %lld %u %lld %u\n",
-        (long long)attrs.atime_sec, attrs.atime_nsec,
-        (long long)attrs.mtime_sec, attrs.mtime_nsec,
-        (long long)attrs.ctime_sec, attrs.ctime_nsec);
-    return 0;
-}
-#endif
+#endif /* VFSI_TEST_ATTRIBUTES */

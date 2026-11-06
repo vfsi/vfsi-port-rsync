@@ -15,6 +15,24 @@ permissions:
   contents: read
 
 jobs:
+  native-macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    name: Native macOS stat projection / ABI v3
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify headers-only preparation
+        run: python3 support/test-build-vfsi-c.py
+      - name: Prepare the published SDK headers
+        id: sdk
+        run: support/build-vfsi-c --headers-only
+      - name: Check native seconds and nanoseconds
+        env:
+          VFSI_INCLUDE: ${{ steps.sdk.outputs.include }}
+        run: |
+          test -f "$VFSI_INCLUDE/vfsi.h"
+          python3 support/test-vfsi-cohorts.py StatProjection
+
   test:
     # The public native dependency builds pinned ntirpc source.
     runs-on: ubuntu-26.04
@@ -28,6 +46,8 @@ jobs:
           sudo apt-get install -y autoconf automake clang cmake \
             libclang-dev libkrb5-dev \
             liburcu-dev make pkg-config
+      - name: Verify SDK preparation
+        run: python3 support/test-build-vfsi-c.py
       - name: Build VFSI from public crates
         id: sdk
         run: support/build-vfsi-c

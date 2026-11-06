@@ -25,6 +25,10 @@ public VNFS 0.0.28 crate, rejects Git-sourced Cargo dependencies, and builds
 the shared library below. It requires Cargo, curl, Python 3, tar, and
 the native prerequisites listed by `vfsi-c` and its dependencies.
 
+Use `support/build-vfsi-c --headers-only` to verify and extract the same
+published headers without Cargo. The macOS CI job uses them to check native
+stat seconds and nanoseconds independently of optional cursor symbols.
+
 A build without `--enable-vfsi` contains no VFSI code or dependency. An
 enabled build loads the shared library dynamically, so it also runs normally
 when the environment variables below are absent.
