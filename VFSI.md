@@ -48,6 +48,16 @@ Use the library path printed by the SDK builder. Both cursor symbols are
 optional: a cursor-aware build also works with older ABI-v3 libraries through
 ordinary bounded path listings.
 
+The listing and cursor-free symbols are enabled only as a complete pair.
+A library exposing just one uses legacy listings when available, otherwise
+the adapter falls back to POSIX before opening a filesystem. Verify cursor
+admission, filter pruning, cleanup and both partial-symbol cases with:
+
+```sh
+python3 support/test-vfsi-cohorts.py
+VFSI_LIBRARY=/path/to/libvfsi_c.so sh support/test-vfsi-port.sh
+```
+
 ## Run on NFS
 
 ```sh
