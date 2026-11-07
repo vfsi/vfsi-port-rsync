@@ -14,6 +14,7 @@ ln -s sub/b "$fixture/source/link"
 VFSI_TRACE=1 VFSI_IMPL=dummy VFSI_LIBRARY="$library" VFSI_ROOT="$fixture" VFSI_MOUNT="$fixture" \
     "$repo/rsync" -a --exclude=excluded/ "$fixture/source/" "$fixture/vector/" 2>"$fixture/trace"
 grep -q "vfsi: listdirs completed" "$fixture/trace"
+grep -q 'phase=collect cohort_application_entries=0' "$fixture/trace"
 diff -r "$fixture/reference" "$fixture/vector"
 test ! -e "$fixture/vector/excluded"
 # Non-incremental recursion must also finish copying parent names before
