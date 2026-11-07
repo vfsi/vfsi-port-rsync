@@ -1,19 +1,28 @@
 #!/bin/sh
-
+# Download a pinned SDK; its published installer owns Cargo/build/install policy.
 set -eu
 
 headers_only=0
 case "$#" in
     0) ;;
     1) if test "$1" = --headers-only; then headers_only=1; else
-           echo "usage: support/build-vfsi-c [--headers-only]" >&2; exit 2
+           echo "usage: $0 [--headers-only]" >&2; exit 2
        fi ;;
-    *) echo "usage: support/build-vfsi-c [--headers-only]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--headers-only]" >&2; exit 2 ;;
 esac
+
+VFSI_C_VERSION=0.3.13
+VFSI_C_SHA256=ef73a1845b2c5cfe40e7d738569b2c83c8f4789278364a1acef61ccb98973bea
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+build_root=${VFSI_BUILD_DIR:-"$root/build-vfsi-c"}
+release_root="$build_root/vfsi-c-$VFSI_C_VERSION"
+archive="$release_root/vfsi-c-$VFSI_C_VERSION.crate"
+source_dir="$release_root/source"
+target_dir="$release_root/target"
 
 report_headers() {
     test -f "$source_dir/include/vfsi.h" || {
-        echo "support/build-vfsi-c: missing vfsi.h in $source_dir/include" >&2; exit 1;
+        echo "$0: missing vfsi.h in $source_dir/include" >&2; exit 1
     }
     printf 'VFSI C header: %s/include/vfsi.h\n' "$source_dir"
     if test -n "${GITHUB_OUTPUT:-}"; then
@@ -21,125 +30,46 @@ report_headers() {
     fi
 }
 
-VFSI_C_VERSION=0.3.12
-VNFS_VERSION=0.0.29
-VFSI_C_SHA256=3528d76bd13d10174bc489ccacf26d7dcc179a847e2455497e161e3a9db21d42
-
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-build_root=${VFSI_BUILD_DIR:-"$root/build-vfsi-c"}
-release_root="$build_root/vfsi-c-$VFSI_C_VERSION-vnfs-$VNFS_VERSION"
-archive="$release_root/vfsi-c-$VFSI_C_VERSION.crate"
-source_dir="$release_root/source"
-target_dir="$release_root/target"
-
-# Explicit local development SDK; default builds still verify the released archive.
 if test -n "${VFSI_SDK_SOURCE:-}"; then
-    if test "$headers_only" = 1; then
-        source_dir=$VFSI_SDK_SOURCE
-        report_headers
-        exit 0
-    fi
-    exec python3 "$VFSI_SDK_SOURCE/build-sdk.py" \
+    source_dir=$VFSI_SDK_SOURCE
+    if test "$headers_only" = 1; then report_headers; exit 0; fi
+    exec python3 "$source_dir/build-sdk.py" \
         --profile "${VFSI_SDK_PROFILE:-release}" --target-dir "${VFSI_SDK_TARGET:-$target_dir}" \
         --prefix "$release_root/sdk-dev"
 fi
 
 for tool in curl python3 tar; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "support/build-vfsi-c: required tool not found: $tool" >&2
-        exit 1
-    fi
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "$0: required tool not found: $tool" >&2; exit 1
+    }
 done
-
 mkdir -p "$release_root"
 if test ! -f "$archive"; then
-	curl --proto '=https' --tlsv1.2 -A "vfsi-port-rsync/$VFSI_C_VERSION" -fsSL \
-		"https://crates.io/api/v1/crates/vfsi-c/$VFSI_C_VERSION/download" \
-		-o "$archive"
+    curl --proto '=https' --tlsv1.2 -A "vfsi-port/$VFSI_C_VERSION" -fsSL \
+        "https://crates.io/api/v1/crates/vfsi-c/$VFSI_C_VERSION/download" \
+        -o "$archive.tmp"
+    mv "$archive.tmp" "$archive"
 fi
-python3 - "$archive" "$VFSI_C_SHA256" <<'PY_CHECKSUM'
+python3 - "$archive" "$VFSI_C_SHA256" <<'CHECKSUM'
 import hashlib
 from pathlib import Path
 import sys
-
-archive = Path(sys.argv[1])
 digest = hashlib.sha256()
-with archive.open("rb") as source:
+with Path(sys.argv[1]).open("rb") as source:
     for chunk in iter(lambda: source.read(1024 * 1024), b""):
         digest.update(chunk)
 if digest.hexdigest() != sys.argv[2]:
-    raise SystemExit(f"checksum mismatch: {archive}")
-print(f"{archive}: OK")
-PY_CHECKSUM
-
-if test ! -f "$source_dir/.rsync-vfsi-release"; then
-	tmp_source="$release_root/source.tmp"
-	rm -rf "$tmp_source"
-	mkdir -p "$tmp_source"
-	tar -xzf "$archive" --strip-components=1 -C "$tmp_source"
-	printf '%s\n' "vfsi-c=$VFSI_C_VERSION" "vnfs=$VNFS_VERSION" \
-		>"$tmp_source/.rsync-vfsi-release"
-	rm -rf "$source_dir"
-	mv "$tmp_source" "$source_dir"
+    raise SystemExit(f"checksum mismatch: {sys.argv[1]}")
+CHECKSUM
+if test ! -f "$source_dir/.vfsi-release"; then
+    tmp_source="$release_root/source.tmp"
+    rm -rf "$tmp_source"
+    mkdir -p "$tmp_source"
+    tar -xzf "$archive" --strip-components=1 -C "$tmp_source"
+    printf '%s\n' "$VFSI_C_SHA256" >"$tmp_source/.vfsi-release"
+    rm -rf "$source_dir"
+    mv "$tmp_source" "$source_dir"
 fi
-
-if test "$headers_only" = 1; then
-    report_headers
-    exit 0
-fi
-
-if ! command -v cargo >/dev/null 2>&1; then
-    echo "support/build-vfsi-c: required tool not found: cargo" >&2
-    exit 1
-fi
-
-if test -f "$source_dir/build-sdk.py"; then
-    exec python3 "$source_dir/build-sdk.py" --registry-only \
-        --target-dir "$target_dir" --prefix "$release_root/sdk"
-fi
-
-# Pre-1.0 patch requirements do not admit the next patch version. Retarget the
-# verified archive's build manifest before resolving the requested public crate.
-cargo add --manifest-path "$source_dir/Cargo.toml" "vnfs@=$VNFS_VERSION"
-cargo update --manifest-path "$source_dir/Cargo.toml" \
-	--package vnfs --precise "$VNFS_VERSION"
-cargo update --manifest-path "$source_dir/Cargo.toml" \
-	--package libntirpc-sys --precise 0.3.3
-
-cargo metadata --locked --format-version 1 \
-	--manifest-path "$source_dir/Cargo.toml" \
-	| python3 -c '
-import json
-import sys
-
-metadata = json.load(sys.stdin)
-root = metadata["resolve"]["root"]
-if root is None:
-    raise SystemExit("expected a standalone vfsi-c SDK package")
-bad = []
-for package in metadata["packages"]:
-    source = package["source"]
-    if package["id"] != root and (source is None or not source.startswith("registry+")):
-        bad.append(f"{package['\''name'\'']} {source}")
-if bad:
-    raise SystemExit("non-registry Cargo dependencies:\n" + "\n".join(bad))
-'
-
-cargo build --release --locked \
-	--manifest-path "$source_dir/Cargo.toml" \
-	--target-dir "$target_dir"
-
-case $(uname -s) in
-	Darwin) library="$target_dir/release/libvfsi_c.dylib" ;;
-	*) library="$target_dir/release/libvfsi_c.so" ;;
-esac
-
-printf '%s\n' \
-	"VFSI C header: $source_dir/include/vfsi.h" \
-	"VFSI C library: $library" \
-	"VNFS version: $VNFS_VERSION (crates.io only)"
-
-# CI consumes the actual installation paths instead of duplicating pin strings.
-if test -n "${GITHUB_OUTPUT:-}"; then
-	printf 'include=%s\nlibrary=%s\n' "$source_dir/include" "$library" >>"$GITHUB_OUTPUT"
-fi
+if test "$headers_only" = 1; then report_headers; exit 0; fi
+exec python3 "$source_dir/build-sdk.py" --registry-only \
+    --target-dir "$target_dir" --prefix "$release_root/sdk"

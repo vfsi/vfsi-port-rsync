@@ -20,13 +20,13 @@ class HeaderPreparation(unittest.TestCase):
         self.root = Path(self.temp.name)
         script = RECIPE.read_text()
         version = re.search(r"^VFSI_C_VERSION=(.+)$", script, re.M).group(1)
-        vnfs = re.search(r"^VNFS_VERSION=(.+)$", script, re.M).group(1)
-        self.release = self.root / "cache" / f"vfsi-c-{version}-vnfs-{vnfs}"
+        self.release = self.root / "cache" / f"vfsi-c-{version}"
         self.release.mkdir(parents=True)
         self.archive = self.release / f"vfsi-c-{version}.crate"
         self.manifest = f'[package]\nname="vfsi-c"\nversion="{version}"\n'.encode()
         with tarfile.open(self.archive, "w:gz") as archive:
             for name, data in [("include/vfsi.h", b"#define VFSI_ABI_VERSION 3\n"),
+                               ("build-sdk.py", b"import os, sys\nfrom pathlib import Path\nPath(os.environ['SDK_ARGS']).write_text(' '.join(sys.argv[1:]))\nos.execvp('cargo', ['cargo', '--version'])\n"),
                                ("Cargo.toml", self.manifest)]:
                 entry = tarfile.TarInfo(f"vfsi-c-{version}/{name}")
                 entry.size = len(data)
@@ -45,7 +45,7 @@ class HeaderPreparation(unittest.TestCase):
         self.output = self.root / "outputs"
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         VFSI_BUILD_DIR=str(self.root / "cache"), GITHUB_OUTPUT=str(self.output),
-                        CARGO_LOG=str(self.log))
+                        CARGO_LOG=str(self.log), SDK_ARGS=str(self.root / "sdk-args"))
         self.env.pop("VFSI_SDK_SOURCE", None)
 
     def run_recipe(self, *args, **env):
@@ -66,6 +66,10 @@ class HeaderPreparation(unittest.TestCase):
         result = self.run_recipe()
         self.assertEqual(result.returncode, 79, result.stderr)
         self.assertTrue(self.log.exists())
+        args = (self.root / "sdk-args").read_text().split()
+        self.assertIn("--registry-only", args)
+        self.assertEqual(args[args.index("--prefix") + 1], str(self.release / "sdk"))
+        self.assertEqual((source / "Cargo.toml").read_bytes(), self.manifest)
 
     def test_bad_checksum_cannot_export_or_extract_headers(self):
         with self.archive.open("ab") as archive:
