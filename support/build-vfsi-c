@@ -22,7 +22,7 @@ report_headers() {
 }
 
 VFSI_C_VERSION=0.3.12
-VNFS_VERSION=0.0.28
+VNFS_VERSION=0.0.29
 VFSI_C_SHA256=3528d76bd13d10174bc489ccacf26d7dcc179a847e2455497e161e3a9db21d42
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
