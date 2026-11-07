@@ -549,6 +549,8 @@ static int vfsi_cache_dirs(struct vfsi_dir **dirs, size_t count)
 		entries += dirs[i]->nr;
 	}
 	if (rc || !state.valid) {
+		if (getenv("VFSI_TRACE"))
+			fprintf(stderr, "vfsi: listing fallback phase=collect errno=%d cohort_application_entries=0\n", rc ? rc : EIO);
 		rprintf(FWARNING, "vfsi: directory cohort failed: %d; using POSIX scan\n", rc ? rc : EIO);
 		rsync_vfsi_reset();
 		vfsi_state.failed = 1;
@@ -557,7 +559,7 @@ static int vfsi_cache_dirs(struct vfsi_dir **dirs, size_t count)
 	for (i = 0; i < count; i++)
 		dirs[i]->loaded = 1;
 	if (getenv("VFSI_TRACE"))
-		fprintf(stderr, "vfsi: listdirs completed mode=%s dirs=%zu cursors=%zu entries=%zu\n",
+		fprintf(stderr, "vfsi: listdirs completed mode=%s dirs=%zu cursors=%zu entries=%zu phase=collect cohort_application_entries=0\n",
 			vfsi_has_cursors() ? "cohort" : "paths", count, retained, entries);
 	if (getenv("VFSI_VERBOSE"))
 		rprintf(FINFO, "vfsi: cached %lu entries in %lu directories\n",
