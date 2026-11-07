@@ -153,7 +153,13 @@ static int listing(struct vfsi_fs *fs, const char *const *paths,
     return error;
 }
 #ifndef VFSI_TEST_OLD_LIBRARY
+#ifdef VFSI_TEST_NO_CURSOR_FREE
+__attribute__((visibility("hidden")))
+#endif
 void vfsi_dir_cursor_free(struct vfsi_dir_cursor *c) { release(c); }
+#ifdef VFSI_TEST_NO_CURSOR_LISTING
+__attribute__((visibility("hidden")))
+#endif
 int vfsi_listdirs_from_cursors(struct vfsi_fs *fs, const char *const *dirs,
     struct vfsi_dir_cursor **cursors, size_t count, const struct vfsi_listing_options *options,
     vfsi_indexed_listdir_cursor_cb cb, void *data, struct vfsi_listing_result *results)

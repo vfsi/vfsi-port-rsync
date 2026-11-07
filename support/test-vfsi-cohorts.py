@@ -47,8 +47,18 @@ class Cohorts(unittest.TestCase):
         cls.library = Path(cls.build.name) / "cohort.so"
         cls.legacy = Path(cls.build.name) / "legacy.so"
         cls.cursor_only = Path(cls.build.name) / "cursor-only.so"
-        for output, flags in [(cls.library, []), (cls.legacy, ["-DVFSI_TEST_OLD_LIBRARY"]),
-                              (cls.cursor_only, ["-DVFSI_TEST_NO_LEGACY"])]:
+        cls.incomplete = []
+        cls.incomplete_no_legacy = []
+        variants = [(cls.library, []), (cls.legacy, ["-DVFSI_TEST_OLD_LIBRARY"]),
+                    (cls.cursor_only, ["-DVFSI_TEST_NO_LEGACY"])]
+        for missing in ("CURSOR_FREE", "CURSOR_LISTING"):
+            partial = Path(cls.build.name) / (missing + ".so")
+            no_legacy = Path(cls.build.name) / (missing + "-no-legacy.so")
+            cls.incomplete.append(partial)
+            cls.incomplete_no_legacy.append(no_legacy)
+            variants.extend([(partial, ["-DVFSI_TEST_NO_" + missing]),
+                             (no_legacy, ["-DVFSI_TEST_NO_" + missing, "-DVFSI_TEST_NO_LEGACY"])])
+        for output, flags in variants:
             subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-shared", "-fPIC", "-Wall", "-Wextra", "-Werror",
                             "-I" + str(include), *flags, str(REPO / "support/vfsi-cohort-mock.c"), "-o", str(output)], check=True)
 
@@ -157,6 +167,24 @@ class Cohorts(unittest.TestCase):
                 self.assertIn("mode=paths", result.stderr)
                 self.assertNotIn("mode=cohort", result.stderr)
                 self.assertTrue(any(line.startswith("LEGACY\t") for line in events))
+
+    def test_incomplete_optional_symbol_pair_keeps_legacy_listing(self):
+        for library in self.incomplete:
+            for incremental in (True, False):
+                with self.subTest(library=library.name, incremental=incremental):
+                    result, events = self.check_case(incremental, library)
+                    self.assertIn("mode=paths", result.stderr)
+                    self.assertNotIn("mode=cohort", result.stderr)
+                    self.assertTrue(any(line.startswith("LEGACY\t") for line in events))
+                    self.assertFalse(any(line.startswith("BATCH\t") for line in events))
+
+    def test_incomplete_optional_symbol_pair_without_legacy_uses_posix(self):
+        for library in self.incomplete_no_legacy:
+            for incremental in (True, False):
+                with self.subTest(library=library.name, incremental=incremental):
+                    result, events = self.check_case(incremental, library)
+                    self.assertNotIn("vfsi: listdirs completed", result.stderr)
+                    self.assertFalse(events, "an unusable SDK must not open or enumerate directories")
 
     def test_cursor_only_library_does_not_require_the_legacy_listing_symbol(self):
         for incremental in [True, False]:
