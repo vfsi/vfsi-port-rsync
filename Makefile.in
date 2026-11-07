@@ -85,6 +85,12 @@ CHECK_COMPILE_OBJS=syscall-no-at-fdcwd.o access-no-inet6.o
 all: Makefile rsync$(EXEEXT) stunnel-rsyncd.conf @MAKE_RRSYNC@ @MAKE_MAN@
 .PHONY: all
 
+# Changing the SDK include path regenerates Makefile; rebuild the adapter even
+# when headers at the old path still exist. Track optional helper headers too.
+VFSI_HEADERS = $(foreach opt,$(filter -I%,$(CPPFLAGS)),$(wildcard $(patsubst -I%,%,$(opt))/vfsi*.h))
+rsync-vfsi.o: Makefile $(VFSI_HEADERS)
+
+
 syscall-no-at-fdcwd.o: syscall.c $(HEADERS)
 	$(CC) -I. -I$(srcdir) $(CFLAGS) $(CPPFLAGS) \
 	    -DRSYNC_TEST_NO_AT_FDCWD -c $(srcdir)/syscall.c -o $@
