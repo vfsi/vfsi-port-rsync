@@ -10,11 +10,7 @@
 #include "rsync-vfsi.h"
 #include <vfsi.h>
 #include <vfsi_dynamic.h>
-#if defined(__has_include)
-#if __has_include(<vfsi_posix.h>)
 #include <vfsi_posix.h>
-#endif
-#endif
 
 #if VFSI_ABI_VERSION != 3
 #error "rsync VFSI support requires VFSI C ABI v3"
@@ -67,9 +63,9 @@ struct vfsi_dir {
 };
 
 struct vfsi_entry {
-	char *path;
 	struct vfsi_attrs attrs;
 	struct vfsi_dir_cursor *cursor;
+	char path[];
 };
 
 static struct {
@@ -263,27 +259,6 @@ static void vfsi_mount_clear(struct vfsi_mount *mount)
 	memset(mount, 0, sizeof(*mount));
 }
 
-#if defined(__linux__) && !defined(VFSI_MOUNT_INFO_VERSION)
-static void vfsi_unescape_mount_field(char *field)
-{
-	char *src = field;
-	char *dst = field;
-
-	while (*src) {
-		if (src[0] == '\\' && src[1] >= '0' && src[1] <= '7'
-		 && src[2] >= '0' && src[2] <= '7'
-		 && src[3] >= '0' && src[3] <= '7') {
-			*dst++ = ((src[1] - '0') << 6) | ((src[2] - '0') << 3)
-			       | (src[3] - '0');
-			src += 4;
-		} else
-			*dst++ = *src++;
-	}
-	*dst = '\0';
-}
-#endif
-
-#ifdef VFSI_MOUNT_INFO_VERSION
 static void collect_mount(const char *host, const char *export_root, const char *point, void *data)
 {
     struct vfsi_mount *mount = data;
@@ -292,11 +267,9 @@ static void collect_mount(const char *host, const char *export_root, const char 
     mount->export_root = strdup(export_root);
     mount->mountpoint = strdup(point);
 }
-#endif
 
 static int vfsi_find_mount(const char *path, struct vfsi_mount *result)
 {
-#ifdef VFSI_MOUNT_INFO_VERSION
     if (!vfsi_state.bindings.nfs_mount_info ||
         vfsi_state.bindings.nfs_mount_info(path, collect_mount, result))
         return 0;
@@ -305,47 +278,6 @@ static int vfsi_find_mount(const char *path, struct vfsi_mount *result)
         return 0;
     }
     return 1;
-#elif defined(__linux__)
-	FILE *fp;
-	char line[8192];
-	size_t best_len = 0;
-
-	fp = fopen("/proc/self/mounts", "r");
-	if (!fp)
-		return 0;
-	while (fgets(line, sizeof(line), fp)) {
-		char source[4096], mountpoint[4096], fstype[64];
-		char *export_sep;
-		size_t len;
-
-		if (sscanf(line, "%4095s %4095s %63s", source, mountpoint,
-			   fstype) != 3)
-			continue;
-		if (strcmp(fstype, "nfs") && strcmp(fstype, "nfs4"))
-			continue;
-		vfsi_unescape_mount_field(source);
-		vfsi_unescape_mount_field(mountpoint);
-		len = strlen(mountpoint);
-		if (len <= best_len || !vfsi_path_is_under(path, mountpoint))
-			continue;
-		export_sep = strstr(source, ":/");
-		if (!export_sep)
-			continue;
-		vfsi_mount_clear(result);
-		result->mountpoint = strdup(mountpoint);
-		result->host = new_array(char, (size_t)(export_sep - source) + 1);
-		memcpy(result->host, source, (size_t)(export_sep - source));
-		result->host[export_sep - source] = '\0';
-		result->export_root = strdup(export_sep + 1);
-		best_len = len;
-	}
-	fclose(fp);
-	return result->mountpoint != NULL;
-#else
-	(void)path;
-	(void)result;
-	return 0;
-#endif
 }
 
 static int vfsi_open_for(const char *path)
@@ -473,7 +405,6 @@ static void vfsi_discard_dir(struct vfsi_dir *dir)
 		vfsi_state.cached_entries--;
 		vfsi_state.cached_path_bytes -= strlen(entry->path);
 		vfsi_free_cursor(entry->cursor);
-		free(entry->path);
 		free(entry);
 	}
 	vfsi_free_cursor(dir->cursor);
@@ -543,8 +474,8 @@ static bool vfsi_collect_row(size_t index, const char *path, const char *name,
 		dir->names = realloc_array(dir->names, char *, dir->alloc);
 		dir->entries = realloc_array(dir->entries, struct vfsi_entry *, dir->alloc);
 	}
-	entry = new(struct vfsi_entry);
-	entry->path = new_array(char, plen + 1);
+	/* Keep the pathname and cache record in one allocation/lifetime. */
+	entry = (struct vfsi_entry *)new_array(char, sizeof(*entry) + plen + 1);
 	memcpy(entry->path, path, dlen);
 	if (dlen != 1)
 		entry->path[dlen++] = '/';
@@ -744,7 +675,7 @@ void rsync_vfsi_prepare_siblings(struct file_struct *const *files, int next)
 
 static int vfsi_attrs_to_stat(const struct vfsi_attrs *attrs, STRUCT_STAT *st)
 {
-#if defined(VFSI_POSIX_FIELDS_VERSION) && !defined(USE_STAT64_FUNCS)
+#if !defined(USE_STAT64_FUNCS)
     /* These modes still use kernel metadata for hard links and mount identity. */
     if (!attrs || (attrs->ftype != VFSI_NF4REG && attrs->ftype != VFSI_NF4DIR))
         return 0;
