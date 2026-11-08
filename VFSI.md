@@ -10,7 +10,7 @@ data. VFSI is optional at build time and off by default at runtime.
 
 ## Build
 
-This port uses the published `vfsi-c` 0.3.13 SDK and VFSI C ABI v3,
+This port uses the published `vfsi-c` 0.3.15 SDK and VFSI C ABI v3,
 including retained cursors. Fetch and build it from crates.io with:
 
 ```sh
