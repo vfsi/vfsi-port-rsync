@@ -10,12 +10,12 @@ data. VFSI is optional at build time and off by default at runtime.
 
 ## Build
 
-This port uses the published `vfsi-c` 0.3.18 SDK and VFSI C ABI v3,
+This port uses the published `vfsi-c` 0.3.19 SDK and VFSI C ABI v3,
 including retained cursors. Fetch and build it from crates.io with:
 
 ```sh
 support/build-vfsi-c
-CPPFLAGS=-I"$PWD/build-vfsi-c/vfsi-c-0.3.13/sdk/include" \
+CPPFLAGS=-I"$PWD/build-vfsi-c/vfsi-c-0.3.19/sdk/include" \
     ./configure --enable-vfsi
 make
 ```
@@ -37,9 +37,9 @@ when the environment variables below are absent.
 To test a development checkout, select a local SDK explicitly:
 
 ```sh
-VFSI_SDK_SOURCE="$HOME/vnfs02/bindings/c" VFSI_SDK_PROFILE=dev \
+VFSI_SDK_SOURCE="$HOME/vnfs/bindings/c" VFSI_SDK_PROFILE=dev \
     support/build-vfsi-c
-CPPFLAGS=-I"$PWD/build-vfsi-c/vfsi-c-0.3.13/sdk-dev/include" \
+CPPFLAGS=-I"$PWD/build-vfsi-c/vfsi-c-0.3.19/sdk-dev/include" \
     ./configure --enable-vfsi
 make
 ```
@@ -62,7 +62,7 @@ VFSI_LIBRARY=/path/to/libvfsi_c.so sh support/test-vfsi-port.sh
 
 ```sh
 VFSI_IMPL=nfs \
-VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.13/sdk/lib/libvfsi_c.so" \
+VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.19/sdk/lib/libvfsi_c.so" \
 rsync -a /mounted/source/ /destination/
 ```
 
@@ -75,7 +75,7 @@ The local test backend uses:
 
 ```sh
 VFSI_IMPL=dummy \
-VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.13/sdk/lib/libvfsi_c.so" \
+VFSI_LIBRARY="$PWD/build-vfsi-c/vfsi-c-0.3.19/sdk/lib/libvfsi_c.so" \
 VFSI_ROOT=/real/backend/root \
 VFSI_MOUNT=/kernel/visible/root \
 rsync -a /kernel/visible/root/ /destination/
