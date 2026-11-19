@@ -38,14 +38,18 @@ static void attributes(struct vfsi_attrs *a, const struct stat *s)
 }
 
 #ifdef VFSI_TEST_ATTRIBUTES
+#include <vfsi_posix.h>
 /* Standalone projection test; the Python driver compares native stat values. */
 int main(int argc, char **argv)
 {
-    struct stat st;
+    struct stat st, projected;
     struct vfsi_attrs attrs;
     if (argc != 2 || stat(argv[1], &st))
         return 1;
     attributes(&attrs, &st);
+    if (vfsi_attrs_stat_fields(&attrs, &projected))
+        return 1;
+    attributes(&attrs, &projected);
     printf("%lld %u %lld %u %lld %u\n",
         (long long)attrs.atime_sec, attrs.atime_nsec,
         (long long)attrs.mtime_sec, attrs.mtime_nsec,
