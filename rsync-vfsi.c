@@ -678,42 +678,18 @@ void rsync_vfsi_prepare_siblings(struct file_struct *const *files, int next)
 
 static int vfsi_attrs_to_stat(const struct vfsi_attrs *attrs, STRUCT_STAT *st)
 {
+	if (!attrs || (attrs->ftype != VFSI_NF4REG && attrs->ftype != VFSI_NF4DIR))
+		return 0;
 #if !defined(USE_STAT64_FUNCS)
-    /* These modes still use kernel metadata for hard links and mount identity. */
-    if (!attrs || (attrs->ftype != VFSI_NF4REG && attrs->ftype != VFSI_NF4DIR))
-        return 0;
-    return vfsi_attrs_stat_fields(attrs, st) == 0;
+	return vfsi_attrs_stat_fields(attrs, st) == 0;
+#elif defined(VFSI_POSIX_STAT64_FIELDS)
+	return vfsi_attrs_stat64_fields(attrs, st) == 0;
 #else
-	if ((attrs->ftype != VFSI_NF4REG && attrs->ftype != VFSI_NF4DIR) ||
-	    attrs->size > INT64_MAX || attrs->blocks > INT64_MAX ||
-	    attrs->mtime_nsec >= 1000000000 || attrs->atime_nsec >= 1000000000)
-		return 0;
-	memset(st, 0, sizeof(*st));
-	st->st_ino = attrs->fileid;
-	st->st_mode = (attrs->mode & 07777)
-		    | (attrs->ftype == VFSI_NF4DIR ? S_IFDIR : S_IFREG);
-	st->st_nlink = attrs->nlink;
-	st->st_uid = attrs->uid;
-	st->st_gid = attrs->gid;
-	st->st_size = attrs->size;
-	st->st_blocks = attrs->blocks;
-	st->st_atime = attrs->atime_sec;
-	st->st_mtime = attrs->mtime_sec;
-	st->st_ctime = attrs->ctime_sec;
-	if ((uint64_t)st->st_size != attrs->size || (uint64_t)st->st_blocks != attrs->blocks ||
-	    (uint64_t)st->st_ino != attrs->fileid || (int64_t)st->st_mtime != attrs->mtime_sec ||
-	    (int64_t)st->st_atime != attrs->atime_sec)
-		return 0;
-#ifdef ST_ATIME_NSEC
-	st->ST_ATIME_NSEC = attrs->atime_nsec;
-#endif
-#ifdef ST_MTIME_NSEC
-	st->ST_MTIME_NSEC = attrs->mtime_nsec;
-#endif
-	return 1;
+	/* Older SDK headers have no projection for this layout. */
+	(void)st;
+	return 0;
 #endif
 }
-
 
 int rsync_vfsi_stat(const char *path, STRUCT_STAT *st)
 {
