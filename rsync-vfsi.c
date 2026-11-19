@@ -206,7 +206,8 @@ static int vfsi_eligible(void)
 		return 0;
 	/* These modes need metadata or path-resolution semantics that this
 	 * integration does not consume safely. */
-	if (am_daemon || module_id >= 0 || am_root < 0 || copy_links
+	if (am_daemon || module_id >= 0 || am_root < 0 || filesfrom_owner_walk_active()
+	 || copy_links
 	 || copy_unsafe_links || copy_dirlinks || insecure_links
 	 || one_file_system || preserve_hard_links)
 		return 0;

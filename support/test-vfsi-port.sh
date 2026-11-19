@@ -25,6 +25,17 @@ grep -q "vfsi: listdirs completed" "$fixture/trace"
 diff -r "$fixture/reference" "$fixture/vector"
 printf '%s\n' 'Rsync port parity passed (incremental and non-incremental recursion).'
 
+# Explicit lists retain rsync's kernel ownership walk.
+printf 'sub/\n' >"$fixture/list"
+VFSI_IMPL=off "$repo/rsync" -ar --files-from="$fixture/list" \
+    "$fixture/source/" "$fixture/reference-list/"
+VFSI_TRACE=1 VFSI_IMPL=dummy VFSI_LIBRARY="$library" VFSI_ROOT="$fixture" VFSI_MOUNT="$fixture" \
+    "$repo/rsync" -ar --files-from="$fixture/list" \
+    "$fixture/source/" "$fixture/vector-list/" 2>"$fixture/trace"
+diff -r "$fixture/reference-list" "$fixture/vector-list"
+test -f "$fixture/vector-list/sub/deep/c"
+if grep -q 'vfsi: listdirs completed' "$fixture/trace"; then exit 1; fi
+
 # Runtime absence must retain the normal scan and must not claim acceleration.
 VFSI_TRACE=1 VFSI_IMPL=dummy VFSI_LIBRARY="$fixture/missing.so" VFSI_ROOT="$fixture" VFSI_MOUNT="$fixture" \
     "$repo/rsync" -a --exclude=excluded/ "$fixture/source/" "$fixture/vector/" 2>"$fixture/trace"
