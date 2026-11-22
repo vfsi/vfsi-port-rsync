@@ -198,23 +198,23 @@ static int vfsi_path_is_under(const char *path, const char *root)
 	    && (len == 1 || path[len] == '\0' || path[len] == '/');
 }
 
-static int vfsi_eligible(void)
+static const char *vfsi_eligible_impl(void)
 {
 	const char *impl = getenv("VFSI_IMPL");
 	const char *library = getenv("VFSI_LIBRARY");
 
 	if (!impl || !*impl || !strcmp(impl, "off") || !library || !*library)
-		return 0;
+		return NULL;
 	if (strcmp(impl, "nfs") && strcmp(impl, "dummy"))
-		return 0;
+		return NULL;
 	/* These modes need metadata or path-resolution semantics that this
 	 * integration does not consume safely. */
 	if (am_daemon || module_id >= 0 || am_root < 0 || filesfrom_owner_walk_active()
 	 || copy_links
 	 || copy_unsafe_links || copy_dirlinks || insecure_links
 	 || one_file_system || preserve_hard_links)
-		return 0;
-	return 1;
+		return NULL;
+	return impl;
 }
 
 static int vfsi_load(void)
@@ -350,10 +350,9 @@ static int vfsi_check_mount_table(const char *root)
 #endif
 }
 
-static int vfsi_open_for(const char *path)
+static int vfsi_open_for(const char *path, const char *impl)
 {
 	vfsi_dynamic_api *b = &vfsi_state.bindings;
-	const char *impl = getenv("VFSI_IMPL");
 	const char *host_override = getenv("VFSI_HOST");
 	const char *export_override = getenv("VFSI_EXPORT");
 	const char *mount_override = getenv("VFSI_MOUNT");
@@ -652,8 +651,9 @@ int rsync_vfsi_listdir(const char *path, struct file_struct *file,
 {
 	char absolute[MAXPATHLEN];
 	struct vfsi_dir *dir;
+	const char *impl;
 	size_t i;
-	if (vfsi_state.failed || !vfsi_eligible()
+	if (vfsi_state.failed || !(impl = vfsi_eligible_impl())
 	 || !vfsi_absolute_path(path, absolute, sizeof absolute))
 		return 0;
 	if (vfsi_state.active)
@@ -664,7 +664,7 @@ int rsync_vfsi_listdir(const char *path, struct file_struct *file,
 		dir = NULL;
 	}
 	if (!dir) {
-		if (!vfsi_open_for(absolute)) {
+		if (!vfsi_open_for(absolute, impl)) {
 			vfsi_state.failed = 1;
 			return 0;
 		}
