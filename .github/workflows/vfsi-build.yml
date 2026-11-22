@@ -78,6 +78,7 @@ jobs:
         env:
           VFSI_INCLUDE: ${{ steps.sdk.outputs.include }}
           VFSI_LIBRARY: ${{ steps.sdk.outputs.library }}
+          VFSI_REQUIRE_CURSOR_API: "1"
         run: |
           grep -q '^#define VFSI_DIRECTORY_CURSORS_VERSION ' "$VFSI_INCLUDE/vfsi.h"
           sh support/test-vfsi-port.sh
