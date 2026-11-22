@@ -59,6 +59,12 @@ jobs:
             ./configure --enable-vfsi --disable-md2man --disable-xxhash \
               --disable-zstd --disable-lz4 --disable-idn
           make -j2
+      - name: Verify cohort traversal, fallback, and ABI compatibility
+        env:
+          VFSI_INCLUDE: ${{ steps.sdk.outputs.include }}
+        run: |
+          grep -q '^#define VFSI_DIRECTORY_CURSORS_VERSION ' "$VFSI_INCLUDE/vfsi.h"
+          python3 support/test-vfsi-cohorts.py
       - name: Smoke test the public VFSI library
         env:
           VFSI_LIBRARY: ${{ steps.sdk.outputs.library }}

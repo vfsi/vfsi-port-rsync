@@ -158,13 +158,40 @@ if test x"$GCC" = x"yes"; then
 fi
 
 VFSI_OBJ=''
+VFSI_DEPS=''
 AC_ARG_ENABLE(vfsi,
-	AS_HELP_STRING([--enable-vfsi],[build optional vectorized sender scans (requires vfsi.h)]))
+	AS_HELP_STRING([--enable-vfsi],[build optional vectorized sender scans (requires the vfsi-c SDK)]))
 if test x"$enable_vfsi" = x"yes"; then
 	AC_CHECK_HEADER([dlfcn.h], [],
 		[AC_MSG_ERROR([--enable-vfsi requires dlfcn.h])])
-	AC_CHECK_HEADER([vfsi.h], [],
-		[AC_MSG_ERROR([--enable-vfsi requires vfsi.h from the public vfsi-c package; see VFSI.md])])
+	AC_MSG_CHECKING([for VFSI C SDK headers and ABI version 3])
+	AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+#include <vfsi.h>
+#include <vfsi_dynamic.h>
+#include <vfsi_posix.h>
+#if VFSI_ABI_VERSION != 3
+# error "VFSI C ABI version 3 required"
+#endif
+	]])], [
+		AC_MSG_RESULT([yes])
+		# Resolve the actual include paths using the same compiler and
+		# flags, including split -I options and system paths.
+		vfsi_deps=$($CC $CFLAGS $CPPFLAGS -M conftest.$ac_ext 2>&AS_MESSAGE_LOG_FD) || vfsi_deps=''
+		VFSI_DEPS=$(printf '%s\n' "$vfsi_deps" | "$AWK" '{
+			for (i = 1; i <= NF; i++) {
+				header = $i
+				while (header ~ /\\$/ && i < NF)
+					header = header " " $(++i)
+				if (header ~ /(^|\/)vfsi.*\.h$/)
+					printf "%s ", header
+			}
+		}')
+		# Compilers without a dependency mode can still build the adapter.
+		test -n "$VFSI_DEPS" || VFSI_DEPS=vfsi-force-rebuild
+	], [
+		AC_MSG_RESULT([no])
+		AC_MSG_ERROR([--enable-vfsi requires vfsi.h, vfsi_dynamic.h and vfsi_posix.h from the public vfsi-c package (ABI v3); see VFSI.md])
+	])
 	AC_SEARCH_LIBS([dlopen], [dl], [],
 		[AC_MSG_ERROR([--enable-vfsi requires dlopen])])
 	AC_DEFINE([SUPPORT_VFSI], 1,
@@ -172,6 +199,7 @@ if test x"$enable_vfsi" = x"yes"; then
 	VFSI_OBJ='rsync-vfsi.o'
 fi
 AC_SUBST(VFSI_OBJ)
+AC_SUBST(VFSI_DEPS)
 
 AC_ARG_WITH(openssl-conf,
 	AS_HELP_STRING([--with-openssl-conf=PATH],[set default OPENSSL_CONF path for rsync]))

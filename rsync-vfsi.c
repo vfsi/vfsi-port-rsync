@@ -17,6 +17,9 @@
 #endif
 
 #include <dlfcn.h>
+#ifdef __linux__
+#include <mntent.h>
+#endif
 
 extern int am_daemon;
 extern int am_root;
@@ -76,7 +79,7 @@ static struct {
 	struct vfsi_dir *dirs, *active;
 	struct hashtable *dirs_by_file;
 	struct vfsi_map entries_by_path;
-	size_t cached_entries, cached_path_bytes, dirs_nr;
+	size_t cached_entries, cached_path_bytes, dirs_nr, dir_path_bytes;
 	int failed;
 } vfsi_state;
 
@@ -281,6 +284,72 @@ static int vfsi_find_mount(const char *path, struct vfsi_mount *result)
     return 1;
 }
 
+#ifdef __linux__
+/* The kernel escapes whitespace and backslashes in mountinfo path fields. */
+static int vfsi_decode_mountpoint(char *path)
+{
+	const char *src = path;
+	char *dest = path;
+
+	while (*src) {
+		if (*src != '\\') {
+			*dest++ = *src++;
+			continue;
+		}
+		if (!strncmp(src + 1, "040", 3))
+			*dest++ = ' ';
+		else if (!strncmp(src + 1, "011", 3))
+			*dest++ = '\t';
+		else if (!strncmp(src + 1, "012", 3))
+			*dest++ = '\n';
+		else if (!strncmp(src + 1, "134", 3))
+			*dest++ = '\\';
+		else
+			return 0;
+		src += 4;
+	}
+	*dest = '\0';
+	return *path == '/';
+}
+#endif
+
+/* Explicit SDK connections do not perform kernel mount discovery. Refuse
+ * the whole mapped root when it hides a nested local mount, including binds
+ * of a single file. Later retained cursors can reach anywhere under it. */
+static int vfsi_check_mount_table(const char *root)
+{
+#ifdef __linux__
+	char *line = NULL;
+	size_t size = 0;
+	FILE *table = setmntent("/proc/self/mountinfo", "r");
+	int covered = 0;
+
+	if (!table)
+		return 0;
+	while (getline(&line, &size, table) >= 0) {
+		char *tail = line, *point = NULL;
+		int i;
+		/* The mount point follows the ID, parent ID, device and root. */
+		for (i = 0; i < 5 && tail; i++)
+			point = strsep(&tail, " ");
+		if (i != 5 || !tail || !vfsi_decode_mountpoint(point)
+		 || (strcmp(point, root) && vfsi_path_is_under(point, root))) {
+			covered = 0;
+			break;
+		}
+		if (vfsi_path_is_under(root, point))
+			covered = 1;
+	}
+	covered = covered && feof(table) && !ferror(table);
+	free(line);
+	endmntent(table);
+	return covered;
+#else
+	(void)root;
+	return 0;
+#endif
+}
+
 static int vfsi_open_for(const char *path)
 {
 	vfsi_dynamic_api *b = &vfsi_state.bindings;
@@ -330,9 +399,17 @@ static int vfsi_open_for(const char *path)
 			free(mount.mountpoint);
 			mount.mountpoint = strdup(mount_override);
 		}
-		vfsi_state.mountpoint = strdup(mount.mountpoint);
+		vfsi_state.mountpoint = realpath(mount.mountpoint, NULL);
+		if (!vfsi_state.mountpoint
+		 || !vfsi_path_is_under(path, vfsi_state.mountpoint)
+		 || !vfsi_check_mount_table(vfsi_state.mountpoint)) {
+			vfsi_mount_clear(&mount);
+			free(vfsi_state.mountpoint);
+			vfsi_state.mountpoint = NULL;
+			return 0;
+		}
 		rc = b->nfs_open_mount_export(mount.host, mount.export_root,
-					      mount.mountpoint, &vfsi_state.fs);
+					      vfsi_state.mountpoint, &vfsi_state.fs);
 		vfsi_mount_clear(&mount);
 	}
 	if (rc) {
@@ -378,6 +455,7 @@ static struct vfsi_dir *vfsi_add_dir(const char *path, struct file_struct *file)
 {
 	struct vfsi_dir *dir = new0(struct vfsi_dir);
 	dir->path = strdup(path);
+	vfsi_state.dir_path_bytes += strlen(path) + 1;
 	dir->file = file;
 	dir->next = vfsi_state.dirs;
 	if (dir->next)
@@ -423,6 +501,7 @@ static void vfsi_discard_dir(struct vfsi_dir *dir)
 		dir->next->prev = dir->prev;
 	free(dir->names);
 	free(dir->entries);
+	vfsi_state.dir_path_bytes -= strlen(dir->path) + 1;
 	free(dir->path);
 	free(dir);
 	vfsi_state.dirs_nr--;
@@ -616,6 +695,11 @@ void rsync_vfsi_remember_dir(struct file_struct *file, const char *path)
 	struct vfsi_dir *dir;
 	if (!vfsi_has_cursors() || !file || !S_ISDIR(file->mode) || !vfsi_state.active
 	 || vfsi_find_dir(file) || !vfsi_absolute_path(path, absolute, sizeof absolute))
+		return;
+	/* Dropped seeds stay with the active snapshot and are freed as usual.
+	 * The individual child can still be listed by its path when visited. */
+	if (vfsi_state.dirs_nr >= VFSI_FRONTIER_ENTRIES
+	 || vfsi_state.dir_path_bytes >= VFSI_FRONTIER_BYTES - (strlen(absolute) + 1))
 		return;
 	entry = vfsi_map_get(&vfsi_state.entries_by_path, absolute);
 	if (!entry || !entry->cursor)

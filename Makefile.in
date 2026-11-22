@@ -86,11 +86,12 @@ CHECK_COMPILE_OBJS=syscall-no-at-fdcwd.o syscall-no-o-directory.o \
 all: Makefile rsync$(EXEEXT) stunnel-rsyncd.conf @MAKE_RRSYNC@ @MAKE_MAN@
 .PHONY: all
 
-# Changing the SDK include path regenerates Makefile; rebuild the adapter even
-# when headers at the old path still exist. Track optional helper headers too.
-VFSI_HEADERS = $(foreach opt,$(filter -I%,$(CPPFLAGS)),$(wildcard $(patsubst -I%,%,$(opt))/vfsi*.h))
-rsync-vfsi.o: Makefile $(VFSI_HEADERS)
+# The compiler resolves SDK includes during configure. Track Makefile as
+# well so reconfiguring with a different SDK path rebuilds the adapter.
+rsync-vfsi.o: Makefile @VFSI_DEPS@
 
+.PHONY: vfsi-force-rebuild
+vfsi-force-rebuild:
 
 syscall-no-at-fdcwd.o: syscall.c $(HEADERS)
 	$(CC) -I. -I$(srcdir) $(CFLAGS) $(CPPFLAGS) \

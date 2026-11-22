@@ -86,6 +86,14 @@ int vfsi_dummy_open_mount(const char *root, const char *mountpoint, struct vfsi_
     (void)root; (void)mountpoint;
     *out=calloc(1,sizeof(**out)); return *out ? 0 : ENOMEM;
 }
+int vfsi_nfs_open_mount_export(const char *host, const char *export_root,
+                               const char *mountpoint, struct vfsi_fs **out)
+{
+    (void)host;
+    (void)export_root;
+    event("OPEN_NFS", mountpoint, 0, 0);
+    return vfsi_dummy_open_mount(mountpoint, mountpoint, out);
+}
 void vfsi_free(struct vfsi_fs *fs)
 {
     event("FREE",NULL,live,0); assert(live == 0); free(fs);

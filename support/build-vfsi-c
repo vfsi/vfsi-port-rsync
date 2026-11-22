@@ -16,60 +16,119 @@ VFSI_C_SHA256=6b61529efef7a6d3294e2d1048225cd9a2163512cf6185ef572377b93ec305ff
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_root=${VFSI_BUILD_DIR:-"$root/build-vfsi-c"}
 release_root="$build_root/vfsi-c-$VFSI_C_VERSION"
-archive="$release_root/vfsi-c-$VFSI_C_VERSION.crate"
-source_dir="$release_root/source"
-target_dir="$release_root/target"
-
-report_headers() {
-    test -f "$source_dir/include/vfsi.h" || {
-        echo "$0: missing vfsi.h in $source_dir/include" >&2; exit 1
-    }
+if test -n "${VFSI_SDK_SOURCE:-}" && test "$headers_only" = 1; then
+    source_dir=$VFSI_SDK_SOURCE
+    for header in vfsi.h vfsi_dynamic.h vfsi_posix.h; do
+        test -f "$source_dir/include/$header" || {
+            echo "$0: missing $header in $source_dir/include" >&2; exit 1
+        }
+    done
     printf 'VFSI C header: %s/include/vfsi.h\n' "$source_dir"
     if test -n "${GITHUB_OUTPUT:-}"; then
         printf 'include=%s/include\n' "$source_dir" >>"$GITHUB_OUTPUT"
     fi
-}
-
-if test -n "${VFSI_SDK_SOURCE:-}"; then
-    source_dir=$VFSI_SDK_SOURCE
-    if test "$headers_only" = 1; then report_headers; exit 0; fi
-    exec python3 "$source_dir/build-sdk.py" \
-        --profile "${VFSI_SDK_PROFILE:-release}" --target-dir "${VFSI_SDK_TARGET:-$target_dir}" \
-        --prefix "$release_root/sdk-dev"
+    exit 0
 fi
 
-for tool in curl python3 tar; do
-    command -v "$tool" >/dev/null 2>&1 || {
-        echo "$0: required tool not found: $tool" >&2; exit 1
-    }
-done
-mkdir -p "$release_root"
-if test ! -f "$archive"; then
-    curl --proto '=https' --tlsv1.2 -A "vfsi-port/$VFSI_C_VERSION" -fsSL \
-        "https://crates.io/api/v1/crates/vfsi-c/$VFSI_C_VERSION/download" \
-        -o "$archive.tmp"
-    mv "$archive.tmp" "$archive"
+if test -z "${VFSI_SDK_SOURCE:-}"; then
+    for tool in curl python3 tar; do
+        command -v "$tool" >/dev/null 2>&1 || {
+            echo "$0: required tool not found: $tool" >&2; exit 1
+        }
+    done
 fi
-python3 - "$archive" "$VFSI_C_SHA256" <<'CHECKSUM'
+# Both SDK builds can share the Cargo target, and installs reuse their prefixes.
+exec python3 - "$release_root" "$VFSI_C_VERSION" "$VFSI_C_SHA256" "$headers_only" <<'PREPARE'
+import fcntl
 import hashlib
+import os
 from pathlib import Path
+import shutil
+import stat
+import subprocess
 import sys
-digest = hashlib.sha256()
-with Path(sys.argv[1]).open("rb") as source:
-    for chunk in iter(lambda: source.read(1024 * 1024), b""):
-        digest.update(chunk)
-if digest.hexdigest() != sys.argv[2]:
-    raise SystemExit(f"checksum mismatch: {sys.argv[1]}")
-CHECKSUM
-if test ! -f "$source_dir/.vfsi-release"; then
-    tmp_source="$release_root/source.tmp"
-    rm -rf "$tmp_source"
-    mkdir -p "$tmp_source"
-    tar -xzf "$archive" --strip-components=1 -C "$tmp_source"
-    printf '%s\n' "$VFSI_C_SHA256" >"$tmp_source/.vfsi-release"
-    rm -rf "$source_dir"
-    mv "$tmp_source" "$source_dir"
-fi
-if test "$headers_only" = 1; then report_headers; exit 0; fi
-exec python3 "$source_dir/build-sdk.py" --registry-only \
-    --target-dir "$target_dir" --prefix "$release_root/sdk"
+import tempfile
+
+release, version, checksum, headers_only = sys.argv[1:]
+release = Path(release)
+archive = release / f"vfsi-c-{version}.crate"
+source = release / "source"
+marker = Path(".vfsi-release")
+required = (
+    Path("include/vfsi.h"), Path("include/vfsi_dynamic.h"), Path("include/vfsi_posix.h"),
+    Path("build-sdk.py"), Path("Cargo.toml"), Path("Cargo.lock"),
+)
+
+def verify(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as archive_file:
+        for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != checksum:
+        raise SystemExit(f"checksum mismatch: {path}")
+
+def prepare():
+    if archive.is_file():
+        verify(archive)
+    else:
+        with tempfile.TemporaryDirectory(dir=release) as temp:
+            download = Path(temp) / archive.name
+            subprocess.run([
+                "curl", "--proto", "=https", "--tlsv1.2", "-A", f"vfsi-port/{version}",
+                "-fsSL", f"https://crates.io/api/v1/crates/vfsi-c/{version}/download",
+                "-o", str(download),
+            ], check=True)
+            verify(download)
+            download.replace(archive)
+
+    try:
+        source_mode = source.lstat().st_mode
+    except FileNotFoundError:
+        source_mode = None
+    source_is_dir = source_mode is not None and stat.S_ISDIR(source_mode)
+    stamp = source / marker
+    if (source_is_dir and stamp.is_file() and stamp.read_bytes() == (checksum + "\n").encode()
+            and all((source / path).is_file() for path in required)):
+        return
+
+    with tempfile.TemporaryDirectory(dir=release) as temp:
+        staging = Path(temp) / "source"
+        staging.mkdir()
+        subprocess.run([
+            "tar", "-xzf", str(archive), "--strip-components=1", "-C", str(staging),
+        ], check=True)
+        if not all((staging / path).is_file() for path in required):
+            raise SystemExit(f"incomplete SDK archive: {archive}")
+        (staging / marker).write_text(checksum + "\n")
+        if source_is_dir:
+            shutil.rmtree(source)
+        elif source_mode is not None:
+            source.unlink()
+        staging.replace(source)
+
+release.mkdir(parents=True, exist_ok=True)
+with (release / ".prepare.lock").open("a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    dev_source = os.environ.get("VFSI_SDK_SOURCE")
+    if dev_source:
+        raise SystemExit(subprocess.call([
+            sys.executable, str(Path(dev_source) / "build-sdk.py"),
+            "--profile", os.environ.get("VFSI_SDK_PROFILE") or "release",
+            "--target-dir", os.environ.get("VFSI_SDK_TARGET") or str(release / "target"),
+            "--prefix", str(release / "sdk-dev"),
+        ], pass_fds=(lock.fileno(),)))
+    try:
+        prepare()
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(error.returncode) from None
+    if headers_only == "1":
+        print(f"VFSI C header: {source}/include/vfsi.h")
+        if os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                output.write(f"include={source}/include\n")
+    else:
+        raise SystemExit(subprocess.call([
+            sys.executable, str(source / "build-sdk.py"), "--registry-only",
+            "--target-dir", str(release / "target"), "--prefix", str(release / "sdk"),
+        ], pass_fds=(lock.fileno(),)))
+PREPARE

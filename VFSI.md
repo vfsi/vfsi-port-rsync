@@ -68,7 +68,9 @@ rsync -a /mounted/source/ /destination/
 
 On Linux, the adapter discovers the source's NFS mount and retains its export,
 protocol, port, and supported authentication settings. Explicit connection
-overrides use `VFSI_HOST`, `VFSI_EXPORT`, and `VFSI_MOUNT`.
+overrides use `VFSI_HOST`, `VFSI_EXPORT`, and `VFSI_MOUNT`. An explicit
+mapping uses native traversal when the local mount table is unavailable or
+the mapped root contains another mount.
 Set `VFSI_VERBOSE=1` to report how many entries and directories were cached.
 
 The local test backend uses:

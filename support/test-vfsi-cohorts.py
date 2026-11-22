@@ -27,9 +27,18 @@ def sdk_include():
     if not makefile.exists():
         return None
     match = re.search(r"^CPPFLAGS=(.*)$", makefile.read_text(), re.M)
-    for token in shlex.split(match.group(1) if match else ""):
-        if token.startswith("-I") and (Path(token[2:]) / "vfsi.h").exists():
-            return Path(token[2:])
+    flags = iter(shlex.split(match.group(1) if match else ""))
+    for flag in flags:
+        if flag == "-I":
+            directory = next(flags, None)
+        elif flag.startswith("-I"):
+            directory = flag[2:]
+        else:
+            continue
+        if directory:
+            include = BINARY.parent / directory
+            if (include / "vfsi.h").is_file():
+                return include
     return None
 
 
@@ -288,6 +297,49 @@ __attribute__((destructor)) static void finish(void) {
                     self.assertTrue(counts, "memset probe did not run")
                     self.assertLess(sum(map(int, counts)), width * 1024,
                                     "path-index clearing must scale with entries, not directories times peak width")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux mount table")
+    def test_explicit_nfs_mapping_rejects_nested_mounts(self):
+        with tempfile.TemporaryDirectory(prefix="rsync-vfsi-mount-") as temp:
+            root = Path(temp).resolve()
+            source = root / "source with spaces"
+            source.mkdir()
+            (source / "child").write_bytes(b"visible source")
+            hook = root / "mount-table.so"
+            code = r"""
+#define _GNU_SOURCE
+#include <mntent.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+FILE *setmntent(const char *file, const char *mode)
+{
+    if (!strcmp(file, "/proc/self/mountinfo"))
+        file = getenv("VFSI_TEST_MOUNT_TABLE");
+    return fopen(file, mode);
+}
+"""
+            subprocess.run([os.environ.get("CC", "cc"), "-shared", "-fPIC", "-Wall", "-Werror",
+                            "-x", "c", "-", "-o", str(hook)], input=code, text=True, check=True)
+            table = root / "mounts"
+            calls = root / "calls"
+            env = dict(os.environ, LD_PRELOAD=str(hook), VFSI_TEST_MOUNT_TABLE=str(table),
+                       VFSI_TEST_LOG=str(calls), VFSI_IMPL="nfs", VFSI_MOUNT=str(source),
+                       VFSI_EXPORT="/export", VFSI_LIBRARY=str(self.library))
+            for point, accelerated in [(source / "child", False), (root / "source with spaces-other", True)]:
+                with self.subTest(point=point):
+                    encoded = str(point).replace(" ", r"\040")
+                    table.write_text("1 0 0:1 / / rw - tmpfs test rw\n"
+                                     f"2 1 0:2 / {encoded} rw - tmpfs test rw\n")
+                    calls.unlink(missing_ok=True)
+                    destination = root / "destination"
+                    result = subprocess.run([*COMMAND, "-a", str(source) + "/", str(destination)],
+                                            env=env, text=True, capture_output=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((destination / "child").read_bytes(), b"visible source")
+                    self.assertEqual(calls.exists(), accelerated)
+                    if accelerated:
+                        self.assertIn("OPEN_NFS", calls.read_text())
 
     def test_dry_run_output_matches_ordinary_sender(self):
         for incremental in [True, False]:
