@@ -169,13 +169,28 @@ class Cohorts(unittest.TestCase):
                     self.assertIn("using POSIX scan", result.stderr)
                     self.assertTrue(any(line.startswith("FREE\t0\t") for line in events))
 
-    def test_missing_optional_symbols_preserve_legacy_v3_listing(self):
+    def test_missing_child_cursor_keeps_that_subtree_on_posix(self):
+        for incremental in (True, False):
+            with self.subTest(incremental=incremental):
+                result, events = self.check_case(incremental, self.library, "missing-child")
+                batches = [tuple(map(int, line.split("\t")[1:3])) for line in events if line.startswith("BATCH\t")]
+                self.assertEqual(batches[0], (1, 0))
+                self.assertTrue(any(count > 1 for count, _ in batches[1:]), batches)
+                self.assertTrue(all(count == anchored for count, anchored in batches[1:]), batches)
+                dirs = [line.split("\t", 3)[3] for line in events if line.startswith("DIR\t")]
+                self.assertFalse(any("d-00" in Path(path).parts for path in dirs), dirs)
+                self.assertTrue(any(path.endswith("/d-01") for path in dirs), dirs)
+                self.assertNotIn("using POSIX scan", result.stderr)
+
+    def test_missing_optional_symbols_keep_legacy_root_listing(self):
         for incremental in [True, False]:
             with self.subTest(incremental=incremental):
                 result, events = self.check_case(incremental, self.legacy)
                 self.assertIn("mode=paths", result.stderr)
                 self.assertNotIn("mode=cohort", result.stderr)
-                self.assertTrue(any(line.startswith("LEGACY\t") for line in events))
+                dirs = [line.split("\t", 3)[3] for line in events if line.startswith("DIR\t")]
+                self.assertEqual(len(dirs), 1, dirs)
+                self.assertEqual(Path(dirs[0]).name, "source with spaces")
 
     def test_incomplete_optional_symbol_pair_keeps_legacy_listing(self):
         for library in self.incomplete:

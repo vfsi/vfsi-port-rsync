@@ -137,7 +137,8 @@ static int listing(struct vfsi_fs *fs, const char *const *paths,
             if (nr==alloc) { alloc=alloc ? alloc*2 : 32; rows=realloc(rows,alloc*sizeof(*rows)); assert(rows); }
             row=&rows[nr++]; memset(row,0,sizeof(*row)); row->index=i; row->name=strdup(entry->d_name); assert(row->name);
             attributes(&row->attrs,&st);
-            if (children && S_ISDIR(st.st_mode)) {
+            if (children && S_ISDIR(st.st_mode)
+                && !(fault && !strcmp(fault,"missing-child") && !strcmp(entry->d_name,"d-00"))) {
                 row->child=cursor(fs,openat(dirfd(dir),entry->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW),path);
                 assert(row->child);
             }

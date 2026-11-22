@@ -102,8 +102,10 @@ frontier records are freed, with the remaining frontier released at file-list
 EOF. Cached sibling snapshots share aggregate entry/path limits across depths.
 
 Rsync applies filters before admitting children, so excluded subtrees are not
-prefetched. Older libraries keep one-directory path listings. Adapters without
-complete bounded listings use POSIX enumeration, preserving `--delete` safety.
+prefetched. Fresh path listings are limited to command-line roots, including
+with older libraries. Descendants without a retained cursor use rsync's
+transfer-root-confined POSIX scan. Adapters without complete bounded listings
+also use POSIX enumeration, preserving `--delete` safety.
 A VFSI open, listing, ABI, or attribute-validation failure disables acceleration
 and uses the normal POSIX scan; partial rows from a failed cohort are discarded
 before that fallback.

@@ -663,6 +663,17 @@ int rsync_vfsi_listdir(const char *path, struct file_struct *file,
 		vfsi_discard_dir(dir);
 		dir = NULL;
 	}
+	/* flist.c sets FLAG_TOP_DIR for command-line operands, including
+	 * those resolved later through --relative's implied directories.
+	 * A fresh SDK path listing can follow symlinks under its mount root.
+	 * Descendants without retained cursor state instead use rsync's
+	 * transfer-root-confined directory open. */
+	if ((!dir || (!dir->loaded && !dir->cursor))
+	 && (!file || !(file->flags & FLAG_TOP_DIR))) {
+		if (dir)
+			vfsi_discard_dir(dir);
+		return 0;
+	}
 	if (!dir) {
 		if (!vfsi_open_for(absolute, impl)) {
 			vfsi_state.failed = 1;
@@ -697,7 +708,7 @@ void rsync_vfsi_remember_dir(struct file_struct *file, const char *path)
 	 || vfsi_find_dir(file) || !vfsi_absolute_path(path, absolute, sizeof absolute))
 		return;
 	/* Dropped seeds stay with the active snapshot and are freed as usual.
-	 * The individual child can still be listed by its path when visited. */
+	 * The individual child uses rsync's native scan when visited. */
 	if (vfsi_state.dirs_nr >= VFSI_FRONTIER_ENTRIES
 	 || vfsi_state.dir_path_bytes >= VFSI_FRONTIER_BYTES - (strlen(absolute) + 1))
 		return;
@@ -716,7 +727,7 @@ void rsync_vfsi_prepare_dirs(struct file_struct *const *files, size_t count)
 	if (!count || vfsi_state.failed || !vfsi_has_cursors() || !vfsi_state.fs)
 		return;
 	first = vfsi_find_dir(files[0]);
-	if (!first || first->loaded)
+	if (!first || first->loaded || !first->cursor)
 		return;
 	/* Keep a reserve for the directory rsync is about to consume. Cold sibling
 	 * snapshots share one global quota, rather than multiplying by tree depth. */
@@ -728,7 +739,7 @@ void rsync_vfsi_prepare_dirs(struct file_struct *const *files, size_t count)
 		if (!S_ISDIR(files[i]->mode) || files[i]->flags & FLAG_MOUNT_DIR)
 			continue;
 		dir = vfsi_find_dir(files[i]);
-		if (dir && !dir->loaded) {
+		if (dir && !dir->loaded && dir->cursor) {
 			size_t j;
 			for (j = 0; j < nr && dirs[j] != dir; j++) {}
 			if (j == nr)
@@ -749,7 +760,7 @@ void rsync_vfsi_prepare_siblings(struct file_struct *const *files, int next)
 	if (next < 0 || vfsi_state.failed || !vfsi_has_cursors() || !vfsi_state.fs)
 		return;
 	first = vfsi_find_dir(files[next]);
-	if (!first || first->loaded)
+	if (!first || first->loaded || !first->cursor)
 		return;
 	while (next >= 0 && nr < VFSI_FRONTIER_DIRS && inspected++ < 256) {
 		struct file_struct *candidate = files[next];
